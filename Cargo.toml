@@ -1,0 +1,43 @@
+[package]
+name = "java-manager"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust library for managing and locating Java installations"
+license = "MIT OR Apache-2.0"
+keywords = ["java", "locator", "manager", "jvm"]
+categories = ["development-tools"]
+authors = ["TaimWay <taimway@gmail.com>"]
+repository = "https://github.com/TaimWay/java-manager"
+documentation = "https://docs.rs/java-manager"
+readme = "Readme.md"
+
+[dependencies]
+glob = "0.3.3"
+
+[dev-dependencies]
+tempfile = "3.3"  # For temporary files in tests
+
+[features]
+# Feature: Only locate JDK installations (skip JRE)
+locate-jdk-only = []
+# Feature: Build binary executable
+build-binary = []
+# Feature: Enable additional debug logging
+debug-logging = []
+# Feature: Enable JSON output support
+json-output = []
+# Feature: Enable YAML output support
+yaml-output = []
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.test]
+opt-level = 0
+debug = true
