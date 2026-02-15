@@ -13,31 +13,13 @@ readme = "Readme.md"
 
 [dependencies]
 glob = "0.3.3"
+is_executable = "1.0.5"
 
 [dev-dependencies]
-tempfile = "3.3"  # For temporary files in tests
+tempfile = "3.3"
 
-[features]
-# Feature: Only locate JDK installations (skip JRE)
-locate-jdk-only = []
-# Feature: Build binary executable
-build-binary = []
-# Feature: Enable additional debug logging
-debug-logging = []
-# Feature: Enable JSON output support
-json-output = []
-# Feature: Enable YAML output support
-yaml-output = []
+[target.'cfg(target_os = "windows")'.dependencies]
+everything-sdk = "0.0.6" 
 
-[profile.release]
-lto = true
-codegen-units = 1
-opt-level = 3
-
-[profile.dev]
-opt-level = 0
-debug = true
-
-[profile.test]
-opt-level = 0
-debug = true
+[target.'cfg(target_os = "linux")'.dependencies]
+walkdir = "2"
