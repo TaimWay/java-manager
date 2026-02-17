@@ -1,6 +1,33 @@
+//! Functions for locating Java installations on the system.
+
 use crate::{JavaError, JavaInfo};
 use std::env;
 
+/// Quickly searches for Java installations by looking for `java` in every directory
+/// listed in the `PATH` environment variable.
+///
+/// This function iterates over all paths in `PATH`, appends the platform‑specific
+/// executable name (`java.exe` on Windows, `java` elsewhere), and attempts to
+/// create a `JavaInfo` for each existing file. Entries that fail to produce a
+/// valid `JavaInfo` (e.g., because the `release` file is missing) are silently
+/// skipped.
+///
+/// # Returns
+///
+/// A `Vec<JavaInfo>` containing all valid Java installations found in `PATH`.
+/// The vector may be empty if none are found.
+///
+/// # Examples
+///
+/// ```no_run
+/// use java_locator::quick_search;
+///
+/// let javas = quick_search()?;
+/// for java in javas {
+///     println!("Found Java at {} (version {})", java.path.display(), java.version);
+/// }
+/// # Ok::<_, java_locator::JavaError>(())
+/// ```
 pub fn quick_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut results: Vec<JavaInfo> = Vec::new();
 
@@ -24,6 +51,39 @@ pub fn quick_search() -> Result<Vec<JavaInfo>, JavaError> {
     Ok(results)
 }
 
+/// Performs a deep search for Java installations using platform‑specific tools.
+///
+/// On Windows, this function uses the [Everything SDK](https://www.voidtools.com/)
+/// to search for `java.exe` files (excluding the `C:\Windows` directory). It requires
+/// the Everything search engine to be installed and running.
+///
+/// On Linux, it walks through common installation directories (`/usr/lib/jvm`,
+/// `/usr/java`, `/opt`, `/usr/local`) and looks for executable files named `java`.
+/// Symbolic links are followed.
+///
+/// # Errors
+///
+/// On Windows, returns `JavaError::ExecuteError` if the Everything database is not
+/// loaded or if Everything is not running.
+///
+/// On Linux, this function does not produce errors from the search itself, but
+/// individual `JavaInfo::new` calls may fail; such failures are ignored.
+///
+/// # Returns
+///
+/// A `Vec<JavaInfo>` containing all valid Java installations found.
+///
+/// # Examples
+///
+/// ```no_run
+/// use java_locator::deep_search;
+///
+/// let javas = deep_search()?;
+/// for java in javas {
+///     println!("Deep search found Java at {}", java.path.display());
+/// }
+/// # Ok::<_, java_locator::JavaError>(())
+/// ```
 pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut results: Vec<JavaInfo> = Vec::new();
 

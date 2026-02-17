@@ -1,3 +1,5 @@
+//! Running Java programs with controlled output and redirection.
+
 use crate::{JavaError, JavaInfo};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -5,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
+/// Controls which output streams are printed to the console.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputMode {
     Both,
@@ -13,18 +16,48 @@ enum OutputMode {
 }
 
 impl JavaInfo {
+    /// Executes the Java executable with the given arguments, printing both
+    /// stdout and stderr to the console.
+    ///
+    /// The argument string is split using shell‑like rules (via `shell_words`).
+    /// The child process's stdout and stderr are captured and printed line by line
+    /// while the process runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JavaError::IoError` if spawning or waiting fails.
+    /// Returns `JavaError::Other` if the argument string cannot be parsed.
+    /// Returns `JavaError::ExecutionFailed` if the Java process exits with a non‑zero status.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use java_locator::JavaInfo;
+    /// # let java = JavaInfo::new("/path/to/java".into())?;
+    /// java.execute("-version")?;
+    /// # Ok::<_, java_locator::JavaError>(())
+    /// ```
     pub fn execute(&self, args: &str) -> Result<(), JavaError> {
         self.run_java(args, OutputMode::Both)
     }
 
+    /// Executes the Java executable, printing only stderr to the console.
+    /// Stdout is captured and discarded.
+    ///
+    /// See [`execute`](JavaInfo::execute) for details.
     pub fn execute_with_error(&self, args: &str) -> Result<(), JavaError> {
         self.run_java(args, OutputMode::ErrorOnly)
     }
 
+    /// Executes the Java executable, printing only stdout to the console.
+    /// Stderr is captured and discarded.
+    ///
+    /// See [`execute`](JavaInfo::execute) for details.
     pub fn execute_with_output(&self, args: &str) -> Result<(), JavaError> {
         self.run_java(args, OutputMode::OutputOnly)
     }
 
+    /// Internal implementation of Java execution with configurable output.
     fn run_java(&self, args: &str, mode: OutputMode) -> Result<(), JavaError> {
         let java_exe = self.java_executable()?;
 
@@ -84,6 +117,11 @@ impl JavaInfo {
         }
     }
 
+    /// Returns the path to the `java` executable inside this installation's `JAVA_HOME/bin`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JavaError::NotFound` if the executable does not exist.
     fn java_executable(&self) -> Result<PathBuf, JavaError> {
         let java_home = &self.java_home;
         let exe_name = if cfg!(windows) { "java.exe" } else { "java" };
@@ -99,6 +137,28 @@ impl JavaInfo {
     }
 }
 
+/// A builder for configuring and executing a Java program (JAR or main class).
+///
+/// This struct allows you to set the Java runtime, JAR file or main class,
+/// memory limits, program arguments, and I/O redirection before spawning the
+/// process.
+///
+/// # Examples
+///
+/// ```no_run
+/// use java_locator::{JavaRunner, JavaRedirect};
+///
+/// # let java = java_locator::java_home().unwrap();
+/// JavaRunner::new()
+///     .java(java)
+///     .jar("myapp.jar")
+///     .min_memory(256 * 1024 * 1024)   // 256 MB
+///     .max_memory(1024 * 1024 * 1024)  // 1 GB
+///     .arg("--server")
+///     .redirect(JavaRedirect::new().output("out.log").error("err.log"))
+///     .execute()?;
+/// # Ok::<_, java_locator::JavaError>(())
+/// ```
 #[derive(Debug, Default)]
 pub struct JavaRunner {
     java: Option<JavaInfo>,
@@ -110,6 +170,11 @@ pub struct JavaRunner {
     redirect: JavaRedirect,
 }
 
+/// I/O redirection options for a Java process.
+///
+/// Use the builder methods to specify files for stdout, stderr, and stdin.
+/// If a stream is not redirected, it will inherit the parent's corresponding
+/// stream (i.e., print to console or read from keyboard).
 #[derive(Debug, Default)]
 pub struct JavaRedirect {
     output: Option<PathBuf>,
@@ -118,20 +183,27 @@ pub struct JavaRedirect {
 }
 
 impl JavaRedirect {
+    /// Creates a new empty redirection configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Redirects the Java process's standard output to the given file.
+    /// The file will be created (or truncated) before execution.
     pub fn output(mut self, path: impl AsRef<Path>) -> Self {
         self.output = Some(path.as_ref().to_path_buf());
         self
     }
 
+    /// Redirects the Java process's standard error to the given file.
+    /// The file will be created (or truncated) before execution.
     pub fn error(mut self, path: impl AsRef<Path>) -> Self {
         self.error = Some(path.as_ref().to_path_buf());
         self
     }
 
+    /// Redirects the Java process's standard input from the given file.
+    /// The file must exist and be readable.
     pub fn input(mut self, path: impl AsRef<Path>) -> Self {
         self.input = Some(path.as_ref().to_path_buf());
         self
@@ -139,45 +211,76 @@ impl JavaRedirect {
 }
 
 impl JavaRunner {
+    /// Creates a new builder with default settings.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Sets the Java installation to use.
+    ///
+    /// This is mandatory before calling `execute`.
     pub fn java(mut self, java: JavaInfo) -> Self {
         self.java = Some(java);
         self
     }
 
+    /// Sets the JAR file to execute (implies the `-jar` flag).
+    ///
+    /// Either `jar` or `main_class` must be set.
     pub fn jar(mut self, jar: impl AsRef<Path>) -> Self {
         self.jar = Some(jar.as_ref().to_path_buf());
         self
     }
 
+    /// Sets the initial heap size (`-Xms`).
+    ///
+    /// The value is given in bytes and will be formatted as a memory string
+    /// (e.g., `256m`, `1g`). If the size is not a multiple of a megabyte or gigabyte,
+    /// it will be rounded to the nearest megabyte.
     pub fn min_memory(mut self, bytes: usize) -> Self {
         self.min_memory = Some(format_memory(bytes));
         self
     }
 
+    /// Sets the maximum heap size (`-Xmx`).
+    ///
+    /// See [`min_memory`](JavaRunner::min_memory) for formatting details.
     pub fn max_memory(mut self, bytes: usize) -> Self {
         self.max_memory = Some(format_memory(bytes));
         self
     }
 
+    /// Sets the main class to execute (instead of a JAR file).
+    ///
+    /// Either `jar` or `main_class` must be set.
     pub fn main_class(mut self, class: impl Into<String>) -> Self {
         self.main_class = Some(class.into());
         self
     }
 
+    /// Adds a single argument to be passed to the Java program.
+    ///
+    /// Arguments are appended in the order they are added.
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
         self.args.push(arg.into());
         self
     }
 
+    /// Sets I/O redirection options.
     pub fn redirect(mut self, redirect: JavaRedirect) -> Self {
         self.redirect = redirect;
         self
     }
 
+    /// Executes the configured Java program.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JavaError::Other` if no Java installation has been set, or if
+    /// neither a JAR file nor a main class has been specified.
+    /// Returns `JavaError::NotFound` if the Java executable does not exist.
+    /// Returns `JavaError::IoError` if file operations or process spawning fail.
+    /// Returns `JavaError::ExecutionFailed` if the Java process exits with a non‑zero status.
     pub fn execute(self) -> Result<(), JavaError> {
         let java = self.java.ok_or_else(|| {
             JavaError::Other("Must set Java environment via `.java(...)`".to_string())
@@ -236,6 +339,11 @@ impl JavaRunner {
     }
 }
 
+/// Formats a memory size in bytes into a Java‑compatible string (`<n>m` or `<n>g`).
+///
+/// If the size is an exact multiple of 1 GiB, it is formatted as `<n>g`.
+/// Otherwise, if it is an exact multiple of 1 MiB, it is formatted as `<n>m`.
+/// If neither, it is rounded to the nearest mebibyte and formatted as `<n>m`.
 fn format_memory(bytes: usize) -> String {
     const MB: usize = 1024 * 1024;
     const GB: usize = MB * 1024;

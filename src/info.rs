@@ -1,3 +1,5 @@
+//! Core type representing a Java installation and its metadata.
+
 use crate::JavaError;
 use is_executable::is_executable;
 use std::collections::HashMap;
@@ -9,17 +11,51 @@ use std::str;
 
 const UNKNOWN: &str = "UNKNOWN";
 
+/// Represents a discovered Java installation.
+///
+/// This struct holds metadata about a Java runtime, such as its version,
+/// vendor, architecture, and the location of its `java` executable and
+/// `JAVA_HOME` directory.
 #[derive(Debug)]
 pub struct JavaInfo {
+    /// Human-readable name of the Java implementation (e.g., "OpenJDK").
     pub name: String,
+    /// Version string (e.g., "11.0.2").
     pub version: String,
+    /// Full path to the `java` executable (or the path originally provided).
     pub path: PathBuf,
+    /// Vendor name (e.g., "Oracle", "OpenJDK").
     pub vendor: String,
+    /// Architecture (e.g., "64-Bit", "32-Bit").
     pub architecture: String,
+    /// The `JAVA_HOME` directory corresponding to this installation.
     pub java_home: PathBuf,
 }
 
 impl JavaInfo {
+    /// Creates a new `JavaInfo` from a path pointing either to a `java` executable
+    /// or directly to a `JAVA_HOME` directory.
+    ///
+    /// The path is canonicalized, and if it is an executable, the `JAVA_HOME` is
+    /// located by walking up the directory tree until a `bin/java` (or `java.exe`)
+    /// is found. Metadata is then extracted from the `release` file inside
+    /// `JAVA_HOME`, and any missing fields are filled by running `java -version`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JavaError::InvalidJavaPath` if the path does not exist,
+    /// or if `JAVA_HOME` cannot be determined from an executable.
+    /// Returns other `JavaError` variants if I/O or command execution fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use java_locator::JavaInfo;
+    ///
+    /// let info = JavaInfo::new("/usr/lib/jvm/java-11-openjdk/bin/java".into())?;
+    /// println!("Java version: {}", info.version);
+    /// # Ok::<_, java_locator::JavaError>(())
+    /// ```
     pub fn new(path: String) -> Result<Self, JavaError> {
         let path_obj = Path::new(&path);
         if !path_obj.exists() {
@@ -108,14 +144,9 @@ impl JavaInfo {
         Ok(info)
     }
 
-    /// Check if all fields (except path/java_home) have been determined
-    fn is_complete(&self) -> bool {
-        self.name != UNKNOWN
-            && self.version != UNKNOWN
-            && self.vendor != UNKNOWN
-            && self.architecture != UNKNOWN
-    }
-
+    /// Creates a default (empty) `JavaInfo` with all fields set to `"UNKNOWN"`.
+    ///
+    /// This is primarily useful as a placeholder.
     pub fn default() -> Self {
         Self {
             name: UNKNOWN.to_string(),
@@ -125,6 +156,15 @@ impl JavaInfo {
             architecture: UNKNOWN.to_string(),
             java_home: PathBuf::new(),
         }
+    }
+
+    /// Checks whether all metadata fields (name, version, vendor, architecture)
+    /// have been determined (i.e., are not `"UNKNOWN"`).
+    fn is_complete(&self) -> bool {
+        self.name != UNKNOWN
+            && self.version != UNKNOWN
+            && self.vendor != UNKNOWN
+            && self.architecture != UNKNOWN
     }
 }
 
