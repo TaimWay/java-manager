@@ -8,6 +8,7 @@ pub enum JavaError {
     IoError(io::Error),
     ExecuteError(String),
     RuntimeError(String),
+    ExecutionFailed(String),
     Other(String)
 }
 
@@ -19,7 +20,8 @@ impl fmt::Display for JavaError {
             JavaError::IoError(err) => write!(f, "IO error: {}", err),
             JavaError::ExecuteError(msg) => write!(f, "Execute error: {}", msg),
             JavaError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),
-            JavaError::Other(msg) => write!(f, "Other error: {}", msg),
+            JavaError::ExecutionFailed(msg) => write!(f, "Execution failed: {}", msg),
+            JavaError::Other(msg) => write!(f, "Other error: {}", msg)
         }
     }
 }
