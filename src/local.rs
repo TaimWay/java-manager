@@ -14,7 +14,7 @@ use std::env;
 /// # Examples
 ///
 /// ```no_run
-/// use java_locator::java_home;
+/// use java_manager::java_home;
 ///
 /// if let Some(java) = java_home() {
 ///     println!("JAVA_HOME points to Java version {}", java.version);

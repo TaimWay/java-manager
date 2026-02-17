@@ -50,11 +50,11 @@ impl JavaInfo {
     /// # Examples
     ///
     /// ```no_run
-    /// use java_locator::JavaInfo;
+    /// use java_manager::JavaInfo;
     ///
     /// let info = JavaInfo::new("/usr/lib/jvm/java-11-openjdk/bin/java".into())?;
     /// println!("Java version: {}", info.version);
-    /// # Ok::<_, java_locator::JavaError>(())
+    /// # Ok::<_, java_manager::JavaError>(())
     /// ```
     pub fn new(path: String) -> Result<Self, JavaError> {
         let path_obj = Path::new(&path);

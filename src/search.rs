@@ -20,13 +20,13 @@ use std::env;
 /// # Examples
 ///
 /// ```no_run
-/// use java_locator::quick_search;
+/// use java_manager::quick_search;
 ///
 /// let javas = quick_search()?;
 /// for java in javas {
 ///     println!("Found Java at {} (version {})", java.path.display(), java.version);
 /// }
-/// # Ok::<_, java_locator::JavaError>(())
+/// # Ok::<_, java_manager::JavaError>(())
 /// ```
 pub fn quick_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut results: Vec<JavaInfo> = Vec::new();
@@ -76,13 +76,13 @@ pub fn quick_search() -> Result<Vec<JavaInfo>, JavaError> {
 /// # Examples
 ///
 /// ```no_run
-/// use java_locator::deep_search;
+/// use java_manager::deep_search;
 ///
 /// let javas = deep_search()?;
 /// for java in javas {
 ///     println!("Deep search found Java at {}", java.path.display());
 /// }
-/// # Ok::<_, java_locator::JavaError>(())
+/// # Ok::<_, java_manager::JavaError>(())
 /// ```
 pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut results: Vec<JavaInfo> = Vec::new();

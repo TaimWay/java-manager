@@ -32,10 +32,10 @@ impl JavaInfo {
     /// # Examples
     ///
     /// ```no_run
-    /// # use java_locator::JavaInfo;
+    /// # use java_manager::JavaInfo;
     /// # let java = JavaInfo::new("/path/to/java".into())?;
     /// java.execute("-version")?;
-    /// # Ok::<_, java_locator::JavaError>(())
+    /// # Ok::<_, java_manager::JavaError>(())
     /// ```
     pub fn execute(&self, args: &str) -> Result<(), JavaError> {
         self.run_java(args, OutputMode::Both)
@@ -146,9 +146,9 @@ impl JavaInfo {
 /// # Examples
 ///
 /// ```no_run
-/// use java_locator::{JavaRunner, JavaRedirect};
+/// use java_manager::{JavaRunner, JavaRedirect};
 ///
-/// # let java = java_locator::java_home().unwrap();
+/// # let java = java_manager::java_home().unwrap();
 /// JavaRunner::new()
 ///     .java(java)
 ///     .jar("myapp.jar")
@@ -157,7 +157,7 @@ impl JavaInfo {
 ///     .arg("--server")
 ///     .redirect(JavaRedirect::new().output("out.log").error("err.log"))
 ///     .execute()?;
-/// # Ok::<_, java_locator::JavaError>(())
+/// # Ok::<_, java_manager::JavaError>(())
 /// ```
 #[derive(Debug, Default)]
 pub struct JavaRunner {

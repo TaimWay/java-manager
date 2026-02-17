@@ -8,19 +8,16 @@
 //! # Examples
 //!
 //! ```no_run
-//! use java_locator::{quick_search, JavaRunner};
+//! use java_manager::{java_home, JavaRunner};
 //!
 //! // Find all Java installations in PATH
-//! let javas = quick_search()?;
-//! if let Some(java) = javas.first() {
-//!     // Run a JAR file
-//!     JavaRunner::new()
-//!         .java(java.clone())
-//!         .jar("app.jar")
-//!         .arg("--verbose")
-//!         .execute()?;
-//! }
-//! # Ok::<_, java_locator::JavaError>(())
+//! let java = java_home().unwrap();
+//! // Run a JAR file
+//! JavaRunner::new()
+//!     .java(java)
+//!     .arg("--version")
+//!     .execute()?;
+//! # Ok::<_, java_manager::JavaError>(())
 //! ```
 
 pub mod error;
