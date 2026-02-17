@@ -8,6 +8,13 @@ SHELL := /bin/bash
 BLUE := \033[34m
 RESET := \033[0m
 
+ifeq ($(OS),Windows_NT)
+    DETECTED_OS := Windows
+else
+    # Use uname -s to get the system name (Linux, Darwin, MINGW*, CYGWIN*, etc.)
+    DETECTED_OS := $(shell uname -s)
+endif
+
 .PHONY: help
 help:
 	@printf "Available targets:\n"
@@ -19,6 +26,7 @@ help:
 	@printf "  $(BLUE)make example-build-release FILE=<name>$(RESET)  					Build an example in release mode\n"
 	@printf "  $(BLUE)make example-run FILE=<name>$(RESET)         						Run an example (debug mode)\n"
 	@printf "  $(BLUE)make example-run-release FILE=<name>$(RESET)  					Run an example in release mode\n"
+	@printf "  $(BLUE)make example-java-build $(RESET)                   					Build the Java example (examples/java/build)\n"
 	@printf "  $(BLUE)make clear-target$(RESET)                    						Remove entire target directory\n"
 	@printf "  $(BLUE)make clear-target-debug$(RESET)              						Remove debug build artifacts\n"
 	@printf "  $(BLUE)make clear-target-release$(RESET)            						Remove release build artifacts\n"
@@ -69,6 +77,10 @@ example-run:
 example-run-release:
 	@[ -n "$(FILE)" ] || (echo "ERROR: Please specify FILE=<filename>" && exit 1)
 	./target/release/examples/$(FILE)
+
+.PHONY: example-java-build
+example-java-build:
+	cd examples/java && ./build.sh
 
 # Clean targets
 .PHONY: clear-target
