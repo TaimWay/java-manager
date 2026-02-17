@@ -21,15 +21,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         break;
     }
 
-    println!("Found {} Java installations:", installations.len());
+    println!("Found {} Java installation(s):", installations.len());
     println!("{}", "=".repeat(50));
 
     for (i, java) in installations.iter().enumerate() {
-        println!("{}. {}", i + 1, java.name);
-        println!("\tPath: {}", java.path.display());
-        println!("\tVendor: {}", java.vendor);
-        println!("\tArchitecture: {}", java.architecture);
-        println!("\tJava Home: {}", java.java_home.display());
+        println!("{}.\tName: \t\t{}", i + 1, java.name);
+        println!("\tVersion: \t{}", java.version);
+        println!("\tPath: \t\t{}", java.path.display());
+        println!("\tVendor: \t{}", java.vendor);
+        println!("\tArchitecture: \t{}", java.architecture);
+        println!("\tJava Home: \t{}", java.java_home.display());
         println!("{}", "-".repeat(40));
     }
 
