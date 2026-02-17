@@ -5,9 +5,13 @@
 ![Rust.Crate](https://img.shields.io/badge/Crate-java--manager-brightgreen?style=for-the-badge&logo=Rust&logoColor=orange
 )
 [![Crates.io](https://img.shields.io/crates/v/java-manager.svg?style=for-the-badge)](https://crates.io/crates/java-manager)
+[![License](https://img.shields.io/github/license/TaimWay/java-manager?style=for-the-badge&logo=apachelucene&logoColor=white
+)](https://github.com/TaimWay/java-manager/blob/main/LICENSE-APACHE.txt)
 
 [![Github](https://img.shields.io/badge/Github-TaimWay%2Fjava--manager-black?style=for-the-badge&logo=Github&logoColor=white
 )](https://github.com/TaimWay/java-manager)
+[![Author](https://img.shields.io/badge/Author-TaimWay-green?style=for-the-badge&logo=devdotto&logoColor=white
+)](https://github.com/TaimWay)
 ![DevState](https://img.shields.io/badge/DevState-Debug%2FIndev-red?style=for-the-badge&logo=devbox&logoColor=red
 )
 
