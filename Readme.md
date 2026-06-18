@@ -26,7 +26,7 @@ A comprehensive Rust library and command-line tool for discovering, managing, an
 ## Features
 
 - **Cross‑platform** – Works on Windows, macOS, and Linux/Unix.
-- **Java discovery** – Find Java installations via `PATH`, `JAVA_HOME`, or deep system scans (Everything SDK on Windows, common directories on Linux).
+- **Java discovery** – Find Java installations via `PATH`, `JAVA_HOME`, deep system scans (Everything SDK on Windows, walkdir on Linux), or full system scan (registry + keyword BFS + Microsoft Store + `where` command).
 - **Detailed metadata** – Extract version, vendor, architecture, and the location of the `java` executable and `JAVA_HOME`.
 - **Execution control** – Run Java programs (JAR or main class) with configurable memory limits, arguments, and I/O redirection.
 - **Error handling** – Comprehensive error types for path issues, I/O, command execution, and process failures.
@@ -51,7 +51,7 @@ cargo add java-manager
 ### Locate Java installations
 
 ```rust
-use java_manager::{quick_search, deep_search, java_home};
+use java_manager::{quick_search, deep_search, full_search, java_home};
 
 // Quick search: look for 'java' in every directory in PATH
 let javas = quick_search()?;
@@ -59,8 +59,11 @@ for java in javas {
     println!("Found Java at {} (version {})", java.path.display(), java.version);
 }
 
-// Deep search: use platform‑specific tools to find more installations
+// Deep search: Everything SDK (Windows) or walkdir (Linux)
 let all_javas = deep_search()?;
+
+// Full search: multiple scanners without external dependencies
+let all_javas = full_search()?;
 
 // Check JAVA_HOME environment variable
 if let Some(java) = java_home() {
@@ -109,9 +112,11 @@ println!("JAVA_HOME: {}", info.java_home.display());
 
 ## Platform Notes
 
-- **Windows**: Deep search uses the [Everything SDK](https://www.voidtools.com/). Everything must be installed and running.
-- **Linux**: Deep search walks common directories (`/usr/lib/jvm`, `/usr/java`, `/opt`, `/usr/local`) and follows symbolic links.
-- **macOS**: Currently supports the same methods as Linux (will be enhanced in future releases).
+Three search functions serve different needs:
+- **`quick_search()`** — Walks `PATH` on all platforms. Fastest, catches the default Java.
+- **`deep_search()`** — Windows: [Everything SDK](https://www.voidtools.com/) (Everything must be installed + running). Linux: same as `full_search()`.
+- **`full_search()`** — No external dependencies. Windows: registry + keyword BFS + Microsoft Store + `where` command. Linux: walks common directories + `~/.minecraft/runtime` with keyword filtering.
+- **macOS**: Currently supports the same methods as Linux (will be enhanced).
 
 ## License
 
