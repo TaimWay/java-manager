@@ -78,10 +78,8 @@ impl JavaInfo {
         let stdout_handle = if matches!(mode, OutputMode::Both | OutputMode::OutputOnly) {
             Some(thread::spawn(move || {
                 let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        println!("{}", line);
-                    }
+                for line in reader.lines().map_while(Result::ok) {
+                    println!("{}", line);
                 }
             }))
         } else {
@@ -91,10 +89,8 @@ impl JavaInfo {
         let stderr_handle = if matches!(mode, OutputMode::Both | OutputMode::ErrorOnly) {
             Some(thread::spawn(move || {
                 let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        eprintln!("{}", line);
-                    }
+                for line in reader.lines().map_while(Result::ok) {
+                    eprintln!("{}", line);
                 }
             }))
         } else {
@@ -113,7 +109,10 @@ impl JavaInfo {
         if status.success() {
             Ok(())
         } else {
-            Err(JavaError::ExecutionFailed(format!("Execution failed: {}", status.code().unwrap())))
+            Err(JavaError::ExecutionFailed(format!(
+                "Execution failed: {}",
+                status.code().unwrap()
+            )))
         }
     }
 
@@ -302,7 +301,9 @@ impl JavaRunner {
         } else if let Some(main) = self.main_class {
             cmd.arg(main);
         } else {
-            return Err(JavaError::Other("Must specify JAR file or main class".into()));
+            return Err(JavaError::Other(
+                "Must specify JAR file or main class".into(),
+            ));
         }
 
         cmd.args(&self.args);
@@ -334,7 +335,10 @@ impl JavaRunner {
         if status.success() {
             Ok(())
         } else {
-            Err(JavaError::ExecutionFailed(format!("Execution failed: {}", status.code().unwrap())))
+            Err(JavaError::ExecutionFailed(format!(
+                "Execution failed: {}",
+                status.code().unwrap()
+            )))
         }
     }
 }
@@ -348,9 +352,9 @@ fn format_memory(bytes: usize) -> String {
     const MB: usize = 1024 * 1024;
     const GB: usize = MB * 1024;
 
-    if bytes % GB == 0 {
+    if bytes.is_multiple_of(GB) {
         format!("{}g", bytes / GB)
-    } else if bytes % MB == 0 {
+    } else if bytes.is_multiple_of(MB) {
         format!("{}m", bytes / MB)
     } else {
         let mb = (bytes + MB / 2) / MB;

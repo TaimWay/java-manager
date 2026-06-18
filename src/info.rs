@@ -66,16 +66,16 @@ impl JavaInfo {
         }
 
         // Resolve symlinks to get the real absolute path
-        let canonical_path = fs::canonicalize(path_obj)
-            .map_err(|e| JavaError::IoError(e))?;
+        let canonical_path = fs::canonicalize(path_obj).map_err(JavaError::IoError)?;
 
         let (java_home, exec_path) = if canonical_path.is_file() && is_executable(&canonical_path) {
             // It's an executable – locate JAVA_HOME by walking up the tree
-            let home = find_java_home_from_exe(&canonical_path)
-                .ok_or_else(|| JavaError::InvalidJavaPath(format!(
+            let home = find_java_home_from_exe(&canonical_path).ok_or_else(|| {
+                JavaError::InvalidJavaPath(format!(
                     "Unable to determine JAVA_HOME from executable: {}",
                     canonical_path.display()
-                )))?;
+                ))
+            })?;
             (home, Some(canonical_path))
         } else {
             // Assume it's a directory (JAVA_HOME itself)
@@ -83,7 +83,9 @@ impl JavaInfo {
         };
 
         // Path to the java executable inside JAVA_HOME
-        let java_exe = java_home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" });
+        let java_exe = java_home
+            .join("bin")
+            .join(if cfg!(windows) { "java.exe" } else { "java" });
         // Store either the original executable path or the default one from bin
         let stored_path = exec_path.unwrap_or_else(|| java_exe.clone());
 
@@ -120,34 +122,33 @@ impl JavaInfo {
         // --- Step 2: fill missing fields from `java -version` ---
         let version_info = read_version(&java_exe)?;
 
-        if info.name == UNKNOWN {
-            if let Some(name) = version_info.name {
-                info.name = name;
-            }
+        if info.name == UNKNOWN
+            && let Some(name) = version_info.name
+        {
+            info.name = name;
         }
-        if info.version == UNKNOWN {
-            if let Some(ver) = version_info.version {
-                info.version = ver;
-            }
+        if info.version == UNKNOWN
+            && let Some(ver) = version_info.version
+        {
+            info.version = ver;
         }
-        if info.vendor == UNKNOWN {
-            if let Some(vend) = version_info.vendor {
-                info.vendor = vend;
-            }
+        if info.vendor == UNKNOWN
+            && let Some(vend) = version_info.vendor
+        {
+            info.vendor = vend;
         }
-        if info.architecture == UNKNOWN {
-            if let Some(arch) = version_info.arch {
-                info.architecture = arch;
-            }
+        if info.architecture == UNKNOWN
+            && let Some(arch) = version_info.arch
+        {
+            info.architecture = arch;
         }
 
         Ok(info)
     }
+}
 
-    /// Creates a default (empty) `JavaInfo` with all fields set to `"UNKNOWN"`.
-    ///
-    /// This is primarily useful as a placeholder.
-    pub fn default() -> Self {
+impl Default for JavaInfo {
+    fn default() -> Self {
         Self {
             name: UNKNOWN.to_string(),
             version: UNKNOWN.to_string(),
@@ -157,9 +158,9 @@ impl JavaInfo {
             java_home: PathBuf::new(),
         }
     }
+}
 
-    /// Checks whether all metadata fields (name, version, vendor, architecture)
-    /// have been determined (i.e., are not `"UNKNOWN"`).
+impl JavaInfo {
     fn is_complete(&self) -> bool {
         self.name != UNKNOWN
             && self.version != UNKNOWN
@@ -174,7 +175,9 @@ impl JavaInfo {
 fn find_java_home_from_exe(exec_path: &Path) -> Option<PathBuf> {
     let mut current = exec_path.parent()?;
     loop {
-        let bin_java = current.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" });
+        let bin_java = current
+            .join("bin")
+            .join(if cfg!(windows) { "java.exe" } else { "java" });
         if bin_java.exists() && is_executable(&bin_java) {
             return Some(current.to_path_buf());
         }
@@ -243,8 +246,9 @@ fn read_version(java_exe: &Path) -> Result<VersionInfo, JavaError> {
         )));
     }
 
-    let stderr = str::from_utf8(&output.stderr)
-        .map_err(|e| JavaError::RuntimeError(format!("Failed to decode java -version output: {}", e)))?;
+    let stderr = str::from_utf8(&output.stderr).map_err(|e| {
+        JavaError::RuntimeError(format!("Failed to decode java -version output: {}", e))
+    })?;
 
     let mut version = None;
     let mut vendor = None;
@@ -252,27 +256,26 @@ fn read_version(java_exe: &Path) -> Result<VersionInfo, JavaError> {
 
     for line in stderr.lines() {
         // Extract version from lines like `openjdk version "11.0.2" 2019-01-15`
-        if line.contains(" version ") {
-            if let Some(start) = line.find('"') {
-                if let Some(end) = line[start + 1..].find('"') {
-                    version = Some(line[start + 1..start + 1 + end].to_string());
-                }
-            }
+        if line.contains(" version ")
+            && let Some(start) = line.find('"')
+            && let Some(end) = line[start + 1..].find('"')
+        {
+            version = Some(line[start + 1..start + 1 + end].to_string());
         }
 
         // Extract vendor from "Runtime Environment" line
-        if line.contains("Runtime Environment") {
-            if let Some(idx) = line.find("Runtime Environment") {
-                let rest = &line[idx + "Runtime Environment".len()..];
-                let vendor_part = rest.split_whitespace().next().unwrap_or("");
-                let vendor_cleaned = vendor_part
-                    .split(|c| c == '-' || c == '(')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                if !vendor_cleaned.is_empty() {
-                    vendor = Some(vendor_cleaned);
-                }
+        if line.contains("Runtime Environment")
+            && let Some(idx) = line.find("Runtime Environment")
+        {
+            let rest = &line[idx + "Runtime Environment".len()..];
+            let vendor_part = rest.split_whitespace().next().unwrap_or("");
+            let vendor_cleaned = vendor_part
+                .split(['-', '('])
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !vendor_cleaned.is_empty() {
+                vendor = Some(vendor_cleaned);
             }
         }
 
@@ -287,13 +290,13 @@ fn read_version(java_exe: &Path) -> Result<VersionInfo, JavaError> {
     }
 
     // Fallback vendor from first line
-    if vendor.is_none() {
-        if let Some(first_line) = stderr.lines().next() {
-            if first_line.starts_with("openjdk") {
-                vendor = Some("OpenJDK".to_string());
-            } else if first_line.starts_with("java") {
-                vendor = Some("Oracle".to_string());
-            }
+    if vendor.is_none()
+        && let Some(first_line) = stderr.lines().next()
+    {
+        if first_line.starts_with("openjdk") {
+            vendor = Some("OpenJDK".to_string());
+        } else if first_line.starts_with("java") {
+            vendor = Some("Oracle".to_string());
         }
     }
 
