@@ -1,4 +1,4 @@
-use java_manager::{JavaInfo, deep_search, quick_search};
+use java_manager::{JavaInfo, quick_search, full_search, deep_search};
 use std::io::{self, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -6,15 +6,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut input = String::new();
     loop {
-        print!("Do you want to search for Java installations using quick or deep search? (q/d) ");
+        print!("Do you want to search for Java installations using quick or deep search? (q: quick search/f: full search/d: deep search) ");
         io::stdout().flush().unwrap();
         input.clear();
         io::stdin().read_line(&mut input)?;
         match input.to_lowercase().as_str().trim() {
             "q" => installations = quick_search()?,
+            "f" => installations = full_search()?,
             "d" => installations = deep_search()?,
             _ => {
-                println!("Invalid input. Please enter 'q' or 'd'.");
+                println!("Invalid input. Please enter 'q', 'f' or 'd'.");
                 continue;
             }
         }
