@@ -12,6 +12,9 @@ pub enum JavaError {
     /// A required Java executable or file was not found.
     NotFound(String),
 
+    /// A stale registry entry points to a path where `java` no longer exists.
+    StaleRegistryEntry(String),
+
     /// An I/O error occurred (e.g., reading a file or spawning a process).
     IoError(io::Error),
 
@@ -33,6 +36,7 @@ impl fmt::Display for JavaError {
         match self {
             JavaError::InvalidJavaPath(msg) => write!(f, "Invalid Java path: {}", msg),
             JavaError::NotFound(msg) => write!(f, "Not found: {}", msg),
+            JavaError::StaleRegistryEntry(msg) => write!(f, "Stale registry entry: {}", msg),
             JavaError::IoError(err) => write!(f, "IO error: {}", err),
             JavaError::ExecuteError(msg) => write!(f, "Execute error: {}", msg),
             JavaError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),

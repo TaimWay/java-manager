@@ -20,17 +20,43 @@
 //! # Ok::<_, java_manager::JavaError>(())
 //! ```
 
+pub mod cache;
 pub mod error;
 pub mod execute;
 pub mod info;
 pub mod local;
 pub mod search;
 
+pub use cache::JavaCache;
 pub use error::JavaError;
 pub use execute::JavaRedirect;
 pub use execute::JavaRunner;
 pub use info::JavaInfo;
+pub use info::JavaVersion;
 pub use local::java_home;
 pub use search::deep_search;
 pub use search::full_search;
 pub use search::quick_search;
+
+#[cfg(feature = "parallel")]
+pub use search::parallel_full_search;
+
+/// Filter a list of `JavaInfo` by a version requirement.
+///
+/// See [`JavaInfo::matches_version`] for the supported requirement formats.
+pub fn filter_by_version(javas: Vec<JavaInfo>, req: &str) -> Vec<JavaInfo> {
+    javas
+        .into_iter()
+        .filter(|j| j.matches_version(req))
+        .collect()
+}
+
+/// Pick the best (highest version) match from a list of `JavaInfo`.
+///
+/// Returns `None` if no installation matches the requirement.
+pub fn best_match(javas: Vec<JavaInfo>, req: &str) -> Option<JavaInfo> {
+    javas
+        .into_iter()
+        .filter(|j| j.matches_version(req))
+        .max_by(|a, b| a.parsed_version.cmp(&b.parsed_version))
+}

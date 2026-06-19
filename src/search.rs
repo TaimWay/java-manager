@@ -1,4 +1,5 @@
 use crate::{JavaError, JavaInfo};
+use log::debug;
 use std::collections::VecDeque;
 use std::env;
 use std::fs;
@@ -28,15 +29,44 @@ pub fn quick_search() -> Result<Vec<JavaInfo>, JavaError> {
             let java_exe = if cfg!(windows) { "java.exe" } else { "java" };
             let java_path = path.join(java_exe);
 
+            debug!("quick_search: checking PATH entry {:?}", java_path);
             if java_path.is_file()
                 && let Ok(info) = JavaInfo::new(java_path.to_string_lossy().to_string())
             {
+                debug!(
+                    "quick_search: found {} at {}",
+                    info.version,
+                    java_path.display()
+                );
                 results.push(info);
             }
         }
     }
 
+    debug!("quick_search: found {} Java installation(s)", results.len());
     Ok(results)
+}
+
+/// Remove nested JRE entries that are bundled under a parent JDK.
+///
+/// When both `jdk-xxx/bin/java.exe` and `jdk-xxx/jre/bin/java.exe` are
+/// discovered, only the JDK-level installation is kept. Standalone JREs
+/// (whose `java_home` is not a subdirectory of another entry) are unaffected.
+fn dedup_nested(javas: Vec<JavaInfo>) -> Vec<JavaInfo> {
+    let mut keep = vec![true; javas.len()];
+    for i in 0..javas.len() {
+        for j in 0..javas.len() {
+            if i != j && javas[i].java_home.starts_with(&javas[j].java_home) {
+                keep[i] = false;
+            }
+        }
+    }
+    javas
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep[*i])
+        .map(|(_, j)| j)
+        .collect()
 }
 
 pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
@@ -50,7 +80,12 @@ pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
         full_search()
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        full_search()
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         Ok(Vec::new())
     }
@@ -58,6 +93,19 @@ pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
 
 pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut paths = Vec::new();
+
+    if let Some(jh) = env::var_os("JAVA_HOME") {
+        let java_exe =
+            Path::new(&jh)
+                .join("bin")
+                .join(if cfg!(windows) { "java.exe" } else { "java" });
+        let jh_str = java_exe.to_string_lossy();
+        debug!("full_search: checking JAVA_HOME at {jh_str}");
+        if java_exe.exists() {
+            debug!("full_search: JAVA_HOME -> {jh_str}");
+            paths.push(java_exe);
+        }
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -72,13 +120,108 @@ pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
         paths.extend(scan_linux());
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        paths.extend(scan_macos());
+    }
+
     paths.sort();
     paths.dedup();
 
-    Ok(paths
+    debug!(
+        "full_search: {} candidate path(s) before JavaInfo resolution",
+        paths.len()
+    );
+
+    let javas: Vec<JavaInfo> = paths
         .into_iter()
-        .filter_map(|p| JavaInfo::new(p.to_string_lossy().to_string()).ok())
-        .collect())
+        .filter_map(|p| {
+            let result = JavaInfo::new(p.to_string_lossy().to_string());
+            if result.is_err() {
+                debug!("full_search: skipping invalid path {}", p.display());
+            }
+            result.ok()
+        })
+        .collect();
+
+    let count_before = javas.len();
+    let javas = dedup_nested(javas);
+    let removed = count_before - javas.len();
+    if removed > 0 {
+        debug!("full_search: removed {removed} nested JRE entr(ies)");
+    }
+    Ok(javas)
+}
+
+/// Same as [`full_search`] but parallelises `JavaInfo` resolution with rayon.
+///
+/// Only available with the `parallel` feature enabled.
+#[cfg(feature = "parallel")]
+pub fn parallel_full_search() -> Result<Vec<JavaInfo>, JavaError> {
+    use rayon::prelude::*;
+
+    let mut paths = Vec::new();
+
+    if let Some(jh) = env::var_os("JAVA_HOME") {
+        let java_exe =
+            Path::new(&jh)
+                .join("bin")
+                .join(if cfg!(windows) { "java.exe" } else { "java" });
+        let jh_str = java_exe.to_string_lossy();
+        debug!("full_search: checking JAVA_HOME at {jh_str}");
+        if java_exe.exists() {
+            debug!("full_search: JAVA_HOME -> {jh_str}");
+            paths.push(java_exe);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        paths.par_extend(scan_registry());
+        paths.par_extend(scan_default_paths());
+        paths.par_extend(scan_microsoft_store());
+        paths.par_extend(scan_where_command());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        paths.par_extend(scan_linux());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        paths.par_extend(scan_macos());
+    }
+
+    paths.par_sort_unstable();
+    paths.dedup();
+
+    debug!(
+        "parallel_full_search: {} candidate path(s) before JavaInfo resolution",
+        paths.len()
+    );
+
+    let javas: Vec<JavaInfo> = paths
+        .into_par_iter()
+        .filter_map(|p| {
+            let result = JavaInfo::new(p.to_string_lossy().to_string());
+            if result.is_err() {
+                debug!(
+                    "parallel_full_search: skipping invalid path {}",
+                    p.display()
+                );
+            }
+            result.ok()
+        })
+        .collect();
+
+    let count_before = javas.len();
+    let javas = dedup_nested(javas);
+    let removed = count_before - javas.len();
+    if removed > 0 {
+        debug!("parallel_full_search: removed {removed} nested JRE entr(ies)");
+    }
+    Ok(javas)
 }
 
 #[cfg(target_os = "windows")]
@@ -92,11 +235,13 @@ fn deep_search_everything() -> Result<Vec<JavaInfo>, JavaError> {
 
     match everything.is_db_loaded() {
         Ok(false) => {
+            debug!("deep_search_everything: database not fully loaded");
             return Err(JavaError::ExecuteError(
                 "Everything database is not fully loaded".to_string(),
             ));
         }
         Err(EverythingError::Ipc) => {
+            debug!("deep_search_everything: Everything IPC unavailable (not running)");
             return Err(JavaError::ExecuteError(
                 "Everything is not running in the background. Please start Everything.exe"
                     .to_string(),
@@ -105,6 +250,7 @@ fn deep_search_everything() -> Result<Vec<JavaInfo>, JavaError> {
         _ => {}
     }
 
+    debug!("deep_search_everything: querying Everything SDK");
     let mut searcher = everything.searcher();
     searcher.set_search("\"java.exe\" !C:\\Windows\\");
     searcher.set_request_flags(
@@ -122,10 +268,19 @@ fn deep_search_everything() -> Result<Vec<JavaInfo>, JavaError> {
         if let Ok(path) = item.filepath()
             && let Ok(info) = JavaInfo::new(path.to_string_lossy().to_string())
         {
+            debug!(
+                "deep_search_everything: found {} at {}",
+                info.version,
+                path.display()
+            );
             results.push(info);
         }
     }
 
+    debug!(
+        "deep_search_everything: found {} Java installation(s)",
+        results.len()
+    );
     Ok(results)
 }
 
@@ -136,44 +291,106 @@ fn scan_registry() -> Vec<PathBuf> {
 
     let mut results = Vec::new();
 
-    let javasoft_paths = [
-        r"SOFTWARE\JavaSoft\Java Development Kit",
-        r"SOFTWARE\JavaSoft\Java Runtime Environment",
-        r"SOFTWARE\WOW6432Node\JavaSoft\Java Development Kit",
-        r"SOFTWARE\WOW6432Node\JavaSoft\Java Runtime Environment",
+    let entries: &[(*mut std::ffi::c_void, &str, &str)] = &[
+        // JavaSoft — HKLM
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\JavaSoft\Java Development Kit",
+            "JavaHome",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\JavaSoft\Java Runtime Environment",
+            "JavaHome",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\JavaSoft\Java Development Kit",
+            "JavaHome",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\JavaSoft\Java Runtime Environment",
+            "JavaHome",
+        ),
+        // JavaSoft — HKCU
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\JavaSoft\Java Development Kit",
+            "JavaHome",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\JavaSoft\Java Runtime Environment",
+            "JavaHome",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\WOW6432Node\JavaSoft\Java Development Kit",
+            "JavaHome",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\WOW6432Node\JavaSoft\Java Runtime Environment",
+            "JavaHome",
+        ),
+        // Brand-specific
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Azul Systems\Zulu",
+            "InstallationPath",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\BellSoft\Liberica",
+            "InstallationPath",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Eclipse Foundation\Temurin",
+            "InstallationPath",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\Eclipse Foundation\Temurin",
+            "InstallationPath",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Amazon Corretto",
+            "InstallationPath",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"SOFTWARE\Amazon Corretto",
+            "InstallationPath",
+        ),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\GraalVM", "InstallationPath"),
+        (HKEY_CURRENT_USER, r"SOFTWARE\GraalVM", "InstallationPath"),
     ];
 
-    for reg_path in &javasoft_paths {
-        if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(reg_path) {
-            for subkey_name in key.enum_keys().filter_map(|k| k.ok()) {
-                if let Ok(subkey) = key.open_subkey(subkey_name)
-                    && let Ok(java_home) = subkey.get_value::<String, _>("JavaHome")
-                {
-                    let java_exe = Path::new(&java_home).join("bin").join("java.exe");
-                    if java_exe.exists() {
-                        results.push(java_exe);
-                    }
-                }
-            }
-        }
-    }
-
-    let brand_paths = [
-        (r"SOFTWARE\Azul Systems\Zulu", "InstallationPath"),
-        (r"SOFTWARE\BellSoft\Liberica", "InstallationPath"),
-    ];
-
-    for (reg_path, value_name) in &brand_paths {
-        if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(reg_path) {
-            for subkey_name in key.enum_keys().filter_map(|k| k.ok()) {
-                if let Ok(subkey) = key.open_subkey(subkey_name)
-                    && let Ok(install_path) = subkey.get_value::<String, _>(value_name)
-                {
-                    let java_exe = Path::new(&install_path).join("bin").join("java.exe");
-                    if java_exe.exists() {
-                        results.push(java_exe);
-                    }
-                }
+    for &(root, subpath, value_name) in entries {
+        debug!("scan_registry: checking {subpath}");
+        let key = match RegKey::predef(root).open_subkey(subpath) {
+            Ok(k) => k,
+            Err(_) => continue,
+        };
+        for subkey_name in key.enum_keys().filter_map(|k| k.ok()) {
+            let subkey = match key.open_subkey(subkey_name) {
+                Ok(sk) => sk,
+                Err(_) => continue,
+            };
+            let mut install_path: String = match subkey.get_value(value_name) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            install_path = install_path.trim_end_matches('\\').to_string();
+            let java_exe = Path::new(&install_path).join("bin").join("java.exe");
+            if java_exe.exists() {
+                debug!("scan_registry: found valid Java at {install_path}");
+                results.push(java_exe);
+            } else {
+                debug!("scan_registry: stale registry entry at {install_path}");
             }
         }
     }
@@ -188,9 +405,14 @@ fn scan_default_paths() -> Vec<PathBuf> {
 
     for root in roots {
         if !root.exists() {
+            debug!(
+                "scan_default_paths: root does not exist: {}",
+                root.display()
+            );
             continue;
         }
 
+        debug!("scan_default_paths: starting BFS from {}", root.display());
         let mut queue = VecDeque::new();
         queue.push_back((root, 0));
 
@@ -208,11 +430,17 @@ fn scan_default_paths() -> Vec<PathBuf> {
 
                     let java_exe = path.join("java.exe");
                     if java_exe.exists() {
+                        debug!("scan_default_paths: found Java at {}", path.display());
                         results.push(java_exe);
                         continue;
                     }
 
                     if should_explore_deeper(&path) {
+                        debug!(
+                            "scan_default_paths: exploring {} (depth {})",
+                            path.display(),
+                            depth + 1
+                        );
                         queue.push_back((path, depth + 1));
                     }
                 }
@@ -325,9 +553,11 @@ fn scan_microsoft_store() -> Vec<PathBuf> {
         .join(r"Packages\Microsoft.4297127D64EC6_8wekyb3d8bbwe\LocalCache\Local\runtime");
 
     if !base.exists() {
+        debug!("scan_microsoft_store: base path does not exist");
         return Vec::new();
     }
 
+    debug!("scan_microsoft_store: scanning {}", base.display());
     let mut results = Vec::new();
 
     if let Ok(runtimes) = fs::read_dir(&base) {
@@ -368,6 +598,7 @@ fn scan_microsoft_store() -> Vec<PathBuf> {
 fn scan_where_command() -> Vec<PathBuf> {
     let mut results = Vec::new();
 
+    debug!("scan_where_command: running `where java`");
     if let Ok(output) = std::process::Command::new("where").arg("java").output()
         && output.status.success()
     {
@@ -408,9 +639,11 @@ fn scan_linux() -> Vec<PathBuf> {
 
     for dir in search_dirs {
         if !dir.exists() {
+            debug!("scan_linux: directory does not exist: {}", dir.display());
             continue;
         }
 
+        debug!("scan_linux: walking {}", dir.display());
         for entry in WalkDir::new(&dir)
             .follow_links(true)
             .into_iter()
@@ -437,6 +670,7 @@ fn scan_linux() -> Vec<PathBuf> {
                 if let Ok(metadata) = entry_path.metadata() {
                     let permissions = metadata.permissions();
                     if permissions.mode() & 0o111 != 0 {
+                        debug!("scan_linux: found Java at {}", entry_path.display());
                         results.push(entry_path.to_path_buf());
                     }
                 }
@@ -473,4 +707,86 @@ fn should_explore_linux(path: &Path) -> bool {
     }
 
     is_version_like(&name)
+}
+
+#[cfg(target_os = "macos")]
+fn scan_macos() -> Vec<PathBuf> {
+    use walkdir::WalkDir;
+
+    let mut results = Vec::new();
+
+    let mut search_dirs: Vec<PathBuf> = vec!["/Library/Java/JavaVirtualMachines".into()];
+
+    if let Ok(home) = env::var("HOME") {
+        let user_jvm = Path::new(&home).join("Library/Java/JavaVirtualMachines");
+        if user_jvm.exists() {
+            search_dirs.push(user_jvm);
+        }
+
+        let mc_runtime = Path::new(&home).join(".minecraft").join("runtime");
+        if mc_runtime.exists() {
+            search_dirs.push(mc_runtime);
+        }
+    }
+
+    // Also try /usr/libexec/java_home for the system default
+    debug!("scan_macos: running /usr/libexec/java_home");
+    if let Ok(output) = std::process::Command::new("/usr/libexec/java_home").output() {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout);
+            let jh_path = Path::new(path_str.trim());
+            if jh_path.exists() {
+                let java_exe = jh_path.join("bin").join("java");
+                if java_exe.exists() {
+                    debug!(
+                        "scan_macos: /usr/libexec/java_home -> {}",
+                        java_exe.display()
+                    );
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+
+    for dir in search_dirs {
+        if !dir.exists() {
+            debug!("scan_macos: directory does not exist: {}", dir.display());
+            continue;
+        }
+
+        debug!("scan_macos: walking {}", dir.display());
+        for entry in WalkDir::new(&dir)
+            .max_depth(5)
+            .follow_links(true)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let entry_path = entry.path();
+
+            if entry_path.file_name() != Some(std::ffi::OsStr::new("java")) {
+                continue;
+            }
+            if !entry_path.is_file() {
+                continue;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = entry_path.metadata() {
+                    let permissions = metadata.permissions();
+                    if permissions.mode() & 0o111 != 0 {
+                        debug!("scan_macos: found Java at {}", entry_path.display());
+                        results.push(entry_path.to_path_buf());
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                results.push(entry_path.to_path_buf());
+            }
+        }
+    }
+
+    results
 }
