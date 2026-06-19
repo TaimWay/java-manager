@@ -1,6 +1,6 @@
 [package]
 name = "java-manager"
-version = "0.3.0"
+version = "0.4.0-beta"
 edition = "2024"
 description = "A Rust library for managing and locating Java installations"
 license = "MIT OR Apache-2.0"
@@ -11,9 +11,15 @@ repository = "https://github.com/TaimWay/java-manager"
 documentation = "https://docs.rs/java-manager"
 readme = "Readme.md"
 
+[features]
+default = []
+parallel = ["rayon"]
+
 [dependencies]
 glob = "0.3.3"
 is_executable = "1.0.5"
+log = "0.4"
+rayon = { version = "1.10", optional = true }
 shell-words = "1.1.1"
 
 [dev-dependencies]
@@ -24,5 +30,5 @@ everything-sdk = "0.0.6"
 winreg = "0.55.0"
 windows = { version = "0.62.2", features = [ "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 walkdir = "2"
