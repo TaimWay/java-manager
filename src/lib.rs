@@ -27,6 +27,9 @@ pub mod info;
 pub mod local;
 pub mod search;
 
+#[cfg(feature = "download")]
+pub mod download;
+
 pub use cache::JavaCache;
 pub use error::JavaError;
 pub use execute::JavaRedirect;

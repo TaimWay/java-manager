@@ -14,6 +14,7 @@ readme = "Readme.md"
 [features]
 default = []
 parallel = ["rayon"]
+download = ["reqwest", "tokio", "futures-util", "flume", "zip", "flate2", "tar"]
 
 [dependencies]
 glob = "0.3.3"
@@ -22,6 +23,12 @@ log = "0.4"
 rayon = { version = "1.10", optional = true }
 shell-words = "1.1.1"
 
+# Download feature
+reqwest = { version = "0.12", default-features = false, features = ["stream"], optional = true }
+tokio = { version = "1", features = ["fs", "io-util", "rt", "macros", "rt-multi-thread"], optional = true }
+futures-util = { version = "0.3", optional = true }
+flume = { version = "0.11", optional = true }
+
 [dev-dependencies]
 tempfile = "3.3"
 
@@ -29,6 +36,9 @@ tempfile = "3.3"
 everything-sdk = "0.0.6" 
 winreg = "0.55.0"
 windows = { version = "0.62.2", features = [ "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+zip = { version = "2", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 walkdir = "2"
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }

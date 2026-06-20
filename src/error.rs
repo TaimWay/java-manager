@@ -27,6 +27,12 @@ pub enum JavaError {
     /// Execution of a Java process failed (non-zero exit code).
     ExecutionFailed(String),
 
+    /// An error during Java download.
+    DownloadError(String),
+
+    /// An error during archive extraction.
+    ExtractError(String),
+
     /// A generic error with a custom message.
     Other(String),
 }
@@ -41,6 +47,8 @@ impl fmt::Display for JavaError {
             JavaError::ExecuteError(msg) => write!(f, "Execute error: {}", msg),
             JavaError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),
             JavaError::ExecutionFailed(msg) => write!(f, "Execution failed: {}", msg),
+            JavaError::DownloadError(msg) => write!(f, "Download error: {}", msg),
+            JavaError::ExtractError(msg) => write!(f, "Extraction error: {}", msg),
             JavaError::Other(msg) => write!(f, "Other error: {}", msg),
         }
     }
