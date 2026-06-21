@@ -111,9 +111,11 @@ fn dedup_nested(javas: Vec<JavaInfo>) -> Vec<JavaInfo> {
 
 /// Performs a deep, platform-aware search for Java installations.
 ///
-/// **Windows**: Uses the Everything SDK for near-instant results. If the
-/// Everything service is not running or the SDK is unavailable, automatically
-/// falls back to [`full_search`].
+/// **Windows (with `everything` feature)**: Uses the Everything SDK for
+/// near-instant results. If the Everything service is not running or the
+/// SDK is unavailable, automatically falls back to [`full_search`].
+///
+/// **Windows (without `everything`)**: Delegates directly to [`full_search`].
 ///
 /// **Linux / macOS**: Delegates directly to [`full_search`], which walks
 /// standard JVM directories and checks SDKMAN, JBang, asdf-vm, Homebrew,
@@ -126,8 +128,9 @@ fn dedup_nested(javas: Vec<JavaInfo>) -> Vec<JavaInfo> {
 /// # Errors
 ///
 /// Returns [`JavaError::IoError`] if file-system operations fail.
-/// On Windows, an Everything IPC error is silently caught and falls back
-/// to [`full_search`] — this never propagates to the caller.
+/// On Windows (with the `everything` feature), an Everything IPC error is
+/// silently caught and falls back to [`full_search`] — this never propagates
+/// to the caller.
 ///
 /// # Example
 ///
@@ -141,6 +144,7 @@ fn dedup_nested(javas: Vec<JavaInfo>) -> Vec<JavaInfo> {
 pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
     #[cfg(target_os = "windows")]
     {
+        #[cfg(feature = "everything")]
         match deep_search_everything() {
             Ok(results) => return Ok(results),
             Err(e) => {
@@ -392,6 +396,7 @@ pub fn parallel_full_search() -> Result<Vec<JavaInfo>, JavaError> {
 }
 
 #[cfg(target_os = "windows")]
+#[cfg(feature = "everything")]
 fn deep_search_everything() -> Result<Vec<JavaInfo>, JavaError> {
     use everything_sdk::*;
 

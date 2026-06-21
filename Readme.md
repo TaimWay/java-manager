@@ -22,7 +22,7 @@ A comprehensive Rust library for discovering, managing, and interacting with Jav
 ## Features
 
 - **Cross‑platform** – Works on Windows, macOS, and Linux.
-- **Java discovery** – Find Java via `PATH` (`quick_search`), Everything SDK on Windows (`deep_search`), or multi‑strategy full scan (`full_search`):
+- **Java discovery** – Find Java via `PATH` (`quick_search`), Everything SDK on Windows (`deep_search`, requires `everything` feature), or multi‑strategy full scan (`full_search`):
   - **Windows**: Registry (HKLM + HKCU, including Azul, BellSoft, Temurin, Corretto, GraalVM), keyword BFS, Microsoft Store, `where` command, Chocolatey, Scoop, JetBrains bundled JDK.
   - **Linux**: walkdir over `/usr/lib/jvm`, `/usr/java`, `/opt`, `/usr/local`, plus SDKMAN, JBang, asdf‑vm, JetBrains bundled JDK, Minecraft runtime.
   - **macOS**: `/Library/Java/JavaVirtualMachines`, `/usr/libexec/java_home`, plus SDKMAN, JBang, asdf‑vm, Homebrew, JetBrains bundled JDK, Minecraft runtime.
@@ -55,6 +55,7 @@ cargo add java-manager
 |---|---|
 | `parallel` | Enables `parallel_full_search()` via rayon |
 | `download` | Async JDK download with resume, parallel chunks, and archive extraction (ZIP / tar.gz) |
+| `everything` | Use Everything SDK for near-instant Windows search (falls back to `full_search` on error) |
 
 ## Usage
 
@@ -211,7 +212,7 @@ println!("JAVA_HOME: {}", info.java_home.display());
 | Function / Method | Description |
 |---|---|
 | `quick_search()` | Walks `$PATH` — fastest, catches the default Java |
-| `deep_search()` | Windows: Everything SDK (falls back to `full_search`). Linux/macOS: `full_search()` |
+| `deep_search()` | Windows: Everything SDK (requires `everything` feature, falls back to `full_search`).<br>Linux/macOS: `full_search()` |
 | `full_search()` | Registry, BFS, MS Store, `where`, package managers, IDE paths, JVM directories |
 | `parallel_full_search()` | Same as `full_search()` but with rayon‑parallel `JavaInfo` resolution |
 | `java_home()` | Returns the Java pointed to by `$JAVA_HOME` |
@@ -278,9 +279,10 @@ println!("JAVA_HOME: {}", info.java_home.display());
 discovered (e.g. `jdk-xxx/jre/bin/java.exe`), only the JDK-level installation
 is kept. Standalone JREs are unaffected.
 
-**`deep_search()` fallback**: On Windows, if the Everything SDK is not
-available (service not running / not installed), `deep_search()` automatically
-falls back to `full_search()`.
+**`deep_search()` fallback**: On Windows, when the `everything` feature is
+enabled and the Everything SDK is not available (service not running / not
+installed), `deep_search()` automatically falls back to `full_search()`. Without
+the `everything` feature, `deep_search()` always delegates to `full_search()`.
 
 ## Debug Logging
 

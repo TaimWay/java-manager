@@ -1,6 +1,6 @@
 [package]
 name = "java-manager"
-version = "0.4.0-1b"
+version = "0.4.0-2b"
 edition = "2024"
 description = "A Rust library for managing and locating Java installations"
 license = "MIT OR Apache-2.0"
@@ -15,6 +15,7 @@ readme = "Readme.md"
 default = []
 parallel = ["rayon"]
 download = ["reqwest", "tokio", "futures-util", "flume", "zip", "flate2", "tar"]
+everything = ["everything-sdk"]
 
 [dependencies]
 glob = "0.3.3"
@@ -33,7 +34,7 @@ flume = { version = "0.11", optional = true }
 tempfile = "3.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-everything-sdk = "0.0.6" 
+everything-sdk = { version = "0.0.6", optional = true }
 winreg = "0.55.0"
 windows = { version = "0.62.2", features = [ "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 zip = { version = "2", optional = true }
