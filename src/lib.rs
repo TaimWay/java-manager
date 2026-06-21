@@ -53,8 +53,12 @@ pub use search::deep_search;
 pub use search::full_search;
 pub use search::quick_search;
 
+/// Human-readable Java spec parsing and matching (`"Eclipse Adoptium v^17.0.0 ax86_64"`).
+pub mod spec;
+
 #[cfg(feature = "parallel")]
 pub use search::parallel_full_search;
+pub use spec::JavaSpec;
 
 /// Filter a list of `JavaInfo` by a version requirement.
 ///
