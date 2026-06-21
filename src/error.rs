@@ -68,3 +68,74 @@ impl From<io::Error> for JavaError {
         JavaError::IoError(err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn test_display_invalid_path() {
+        let err = JavaError::InvalidJavaPath("bad/path".into());
+        assert_eq!(err.to_string(), "Invalid Java path: bad/path");
+    }
+
+    #[test]
+    fn test_display_not_found() {
+        let err = JavaError::NotFound("missing.exe".into());
+        assert_eq!(err.to_string(), "Not found: missing.exe");
+    }
+
+    #[test]
+    fn test_display_stale_registry() {
+        let err = JavaError::StaleRegistryEntry("HKLM\\..".into());
+        assert_eq!(err.to_string(), "Stale registry entry: HKLM\\..");
+    }
+
+    #[test]
+    fn test_display_execution_failed() {
+        let err = JavaError::ExecutionFailed("exit code 1".into());
+        assert_eq!(err.to_string(), "Execution failed: exit code 1");
+    }
+
+    #[test]
+    fn test_display_extract_error() {
+        let err = JavaError::ExtractError("corrupt archive".into());
+        assert_eq!(err.to_string(), "Extraction error: corrupt archive");
+    }
+
+    #[test]
+    fn test_display_download_error() {
+        let err = JavaError::DownloadError("network".into());
+        assert_eq!(err.to_string(), "Download error: network");
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file missing");
+        let java_err: JavaError = io_err.into();
+        assert!(matches!(java_err, JavaError::IoError(_)));
+        assert!(java_err.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn test_error_source_io() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        let java_err = JavaError::IoError(io_err);
+        assert!(java_err.source().is_some());
+    }
+
+    #[test]
+    fn test_error_source_other_variants() {
+        let err = JavaError::Other("msg".into());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_debug_format() {
+        let err = JavaError::ExecuteError("boom".into());
+        let debug = format!("{err:?}");
+        assert!(debug.contains("ExecuteError"));
+        assert!(debug.contains("boom"));
+    }
+}

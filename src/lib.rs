@@ -20,13 +20,25 @@
 //! # Ok::<_, java_manager::JavaError>(())
 //! ```
 
+/// TTL-based cache that avoids redundant full-disk scans of Java installations.
 pub mod cache;
+
+/// Error types returned by every fallible operation in this crate.
 pub mod error;
+
+/// Execute Java programs with configurable arguments, memory, and I/O.
 pub mod execute;
+
+/// [`JavaInfo`] and [`JavaVersion`] — structured metadata from a Java installation.
 pub mod info;
+
+/// Read the `JAVA_HOME` environment variable.
 pub mod local;
+
+/// Discover Java installations via `PATH`, Everything SDK, registry, BFS, and more.
 pub mod search;
 
+/// Async JDK download with resume support, parallel chunks, and archive extraction.
 #[cfg(feature = "download")]
 pub mod download;
 
@@ -57,6 +69,20 @@ pub fn filter_by_version(javas: Vec<JavaInfo>, req: &str) -> Vec<JavaInfo> {
 /// Pick the best (highest version) match from a list of `JavaInfo`.
 ///
 /// Returns `None` if no installation matches the requirement.
+///
+/// # Examples
+///
+/// ```
+/// use java_manager::{JavaInfo, best_match};
+///
+/// let javas = vec![
+///     JavaInfo { version: "11.0.2".into(), parsed_version: java_manager::JavaVersion::parse("11.0.2"), ..Default::default() },
+///     JavaInfo { version: "17.0.1".into(), parsed_version: java_manager::JavaVersion::parse("17.0.1"), ..Default::default() },
+/// ];
+///
+/// let best = best_match(javas, "11").unwrap();
+/// assert_eq!(best.version, "11.0.2");
+/// ```
 pub fn best_match(javas: Vec<JavaInfo>, req: &str) -> Option<JavaInfo> {
     javas
         .into_iter()

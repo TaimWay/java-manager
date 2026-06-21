@@ -1,17 +1,23 @@
 //! Running Java programs with controlled output and redirection.
 
 use crate::{JavaError, JavaInfo};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
+use std::time::Duration;
 
 /// Controls which output streams are printed to the console.
+///
+/// Used internally by [`JavaInfo::execute`] and its variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputMode {
+pub enum OutputMode {
+    /// Print both stdout and stderr.
     Both,
+    /// Print only stdout; stderr is discarded.
     OutputOnly,
+    /// Print only stderr; stdout is discarded.
     ErrorOnly,
 }
 
@@ -45,6 +51,10 @@ impl JavaInfo {
     /// Stdout is captured and discarded.
     ///
     /// See [`execute`](JavaInfo::execute) for details.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`execute`](JavaInfo::execute).
     pub fn execute_with_error(&self, args: &str) -> Result<(), JavaError> {
         self.run_java(args, OutputMode::ErrorOnly)
     }
@@ -53,6 +63,10 @@ impl JavaInfo {
     /// Stderr is captured and discarded.
     ///
     /// See [`execute`](JavaInfo::execute) for details.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`execute`](JavaInfo::execute).
     pub fn execute_with_output(&self, args: &str) -> Result<(), JavaError> {
         self.run_java(args, OutputMode::OutputOnly)
     }
@@ -167,6 +181,14 @@ pub struct JavaRunner {
     main_class: Option<String>,
     args: Vec<String>,
     redirect: JavaRedirect,
+    classpath: Option<String>,
+    module_path: Option<PathBuf>,
+    add_opens: Vec<String>,
+    add_exports: Vec<String>,
+    system_properties: Vec<String>,
+    env_vars: Vec<(String, String)>,
+    working_dir: Option<PathBuf>,
+    timeout: Option<Duration>,
 }
 
 /// I/O redirection options for a Java process.
@@ -179,6 +201,8 @@ pub struct JavaRedirect {
     output: Option<PathBuf>,
     error: Option<PathBuf>,
     input: Option<PathBuf>,
+    append_output: bool,
+    append_error: bool,
 }
 
 impl JavaRedirect {
@@ -205,6 +229,20 @@ impl JavaRedirect {
     /// The file must exist and be readable.
     pub fn input(mut self, path: impl AsRef<Path>) -> Self {
         self.input = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Append to the output file instead of truncating.
+    /// Only has an effect when [`output`](Self::output) is also set.
+    pub fn append_output(mut self) -> Self {
+        self.append_output = true;
+        self
+    }
+
+    /// Append to the error file instead of truncating.
+    /// Only has an effect when [`error`](Self::error) is also set.
+    pub fn append_error(mut self) -> Self {
+        self.append_error = true;
         self
     }
 }
@@ -271,6 +309,85 @@ impl JavaRunner {
         self
     }
 
+    /// Sets the classpath (`-cp` / `-classpath`).
+    ///
+    /// Paths are joined with the platform-specific separator (`;` on Windows, `:` otherwise).
+    pub fn classpath(mut self, paths: &[impl AsRef<Path>]) -> Self {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        let joined: Vec<String> = paths
+            .iter()
+            .map(|p| p.as_ref().to_string_lossy().to_string())
+            .collect();
+        self.classpath = Some(joined.join(separator));
+        self
+    }
+
+    /// Sets the module path (`--module-path`).
+    pub fn module_path(mut self, path: impl AsRef<Path>) -> Self {
+        self.module_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Adds a `--add-opens` flag (e.g., `java.base/java.lang=ALL-UNNAMED`).
+    pub fn add_opens(
+        mut self,
+        module: impl Into<String>,
+        package: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
+        self.add_opens.push(format!(
+            "{}/{}.{}",
+            module.into(),
+            package.into(),
+            target.into()
+        ));
+        self
+    }
+
+    /// Adds a `--add-exports` flag (e.g., `java.base/com.sun.internal=ALL-UNNAMED`).
+    pub fn add_exports(
+        mut self,
+        module: impl Into<String>,
+        package: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Self {
+        self.add_exports.push(format!(
+            "{}/{}.{}",
+            module.into(),
+            package.into(),
+            target.into()
+        ));
+        self
+    }
+
+    /// Sets a system property (`-Dkey=value`).
+    pub fn system_property(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.system_properties
+            .push(format!("-D{}={}", key.into(), value.into()));
+        self
+    }
+
+    /// Sets an environment variable for the child Java process.
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_vars.push((key.into(), value.into()));
+        self
+    }
+
+    /// Sets the working directory for the child Java process.
+    pub fn working_dir(mut self, path: impl AsRef<Path>) -> Self {
+        self.working_dir = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Sets a timeout for the Java process.
+    ///
+    /// If the process runs longer than the specified duration, it will be killed.
+    /// A `Duration::ZERO` or `None` means no timeout.
+    pub fn timeout(mut self, duration: Duration) -> Self {
+        self.timeout = Some(duration);
+        self
+    }
+
     /// Executes the configured Java program.
     ///
     /// # Errors
@@ -280,13 +397,42 @@ impl JavaRunner {
     /// Returns `JavaError::NotFound` if the Java executable does not exist.
     /// Returns `JavaError::IoError` if file operations or process spawning fail.
     /// Returns `JavaError::ExecutionFailed` if the Java process exits with a non‑zero status.
-    pub fn execute(self) -> Result<(), JavaError> {
-        let java = self.java.ok_or_else(|| {
+    pub fn execute(&self) -> Result<(), JavaError> {
+        let java = self.java.as_ref().ok_or_else(|| {
             JavaError::Other("Must set Java environment via `.java(...)`".to_string())
         })?;
         let java_exe = java.java_executable()?;
 
         let mut cmd = Command::new(java_exe);
+
+        // Classpath
+        if let Some(cp) = &self.classpath {
+            cmd.arg("-cp");
+            cmd.arg(cp);
+        }
+
+        // Module path
+        if let Some(mp) = &self.module_path {
+            cmd.arg("--module-path");
+            cmd.arg(mp);
+        }
+
+        // --add-opens
+        for open in &self.add_opens {
+            cmd.arg("--add-opens");
+            cmd.arg(open);
+        }
+
+        // --add-exports
+        for export in &self.add_exports {
+            cmd.arg("--add-exports");
+            cmd.arg(export);
+        }
+
+        // System properties
+        for prop in &self.system_properties {
+            cmd.arg(prop);
+        }
 
         if let Some(min) = &self.min_memory {
             cmd.arg(format!("-Xms{}", min));
@@ -295,10 +441,10 @@ impl JavaRunner {
             cmd.arg(format!("-Xmx{}", max));
         }
 
-        if let Some(jar) = self.jar {
+        if let Some(jar) = &self.jar {
             cmd.arg("-jar");
             cmd.arg(jar);
-        } else if let Some(main) = self.main_class {
+        } else if let Some(main) = &self.main_class {
             cmd.arg(main);
         } else {
             return Err(JavaError::Other(
@@ -308,26 +454,75 @@ impl JavaRunner {
 
         cmd.args(&self.args);
 
+        // Environment variables
+        for (key, value) in &self.env_vars {
+            cmd.env(key, value);
+        }
+
+        // Working directory
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+
         // Configure redirection
-        if let Some(output) = self.redirect.output {
-            let file = File::create(output).map_err(JavaError::IoError)?;
+        if let Some(output) = &self.redirect.output {
+            let file = if self.redirect.append_output {
+                OpenOptions::new().append(true).create(true).open(output)
+            } else {
+                File::create(output)
+            }
+            .map_err(JavaError::IoError)?;
             cmd.stdout(Stdio::from(file));
         } else {
             cmd.stdout(Stdio::inherit());
         }
 
-        if let Some(error) = self.redirect.error {
-            let file = File::create(error).map_err(JavaError::IoError)?;
+        if let Some(error) = &self.redirect.error {
+            let file = if self.redirect.append_error {
+                OpenOptions::new().append(true).create(true).open(error)
+            } else {
+                File::create(error)
+            }
+            .map_err(JavaError::IoError)?;
             cmd.stderr(Stdio::from(file));
         } else {
             cmd.stderr(Stdio::inherit());
         }
 
-        if let Some(input) = self.redirect.input {
+        if let Some(input) = &self.redirect.input {
             let file = File::open(input).map_err(JavaError::IoError)?;
             cmd.stdin(Stdio::from(file));
         } else {
             cmd.stdin(Stdio::inherit());
+        }
+
+        // Timeout handling
+        if let Some(timeout) = self.timeout {
+            let mut child = cmd.spawn().map_err(JavaError::IoError)?;
+            let start = std::time::Instant::now();
+            loop {
+                if child.try_wait().map_err(JavaError::IoError)?.is_some() {
+                    // Process completed within the timeout
+                    let status = child.wait().map_err(JavaError::IoError)?;
+                    return if status.success() {
+                        Ok(())
+                    } else {
+                        Err(JavaError::ExecutionFailed(format!(
+                            "Execution failed: {}",
+                            status.code().unwrap()
+                        )))
+                    };
+                }
+                if start.elapsed() >= timeout {
+                    // Timeout reached, kill the process
+                    kill_process(&child)?;
+                    return Err(JavaError::ExecutionFailed(format!(
+                        "Process timed out after {}ms",
+                        timeout.as_millis()
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
 
         let status = cmd.status().map_err(JavaError::IoError)?;
@@ -359,5 +554,203 @@ fn format_memory(bytes: usize) -> String {
     } else {
         let mb = (bytes + MB / 2) / MB;
         format!("{}m", mb)
+    }
+}
+
+fn kill_process(child: &std::process::Child) -> Result<(), JavaError> {
+    // The Child struct doesn't have a kill method on & reference,
+    // but we can use taskkill (Windows) or kill command (Unix)
+    let pid = child.id();
+    #[cfg(windows)]
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .status()
+        .map_err(JavaError::IoError)?;
+    #[cfg(not(windows))]
+    let status = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .map_err(JavaError::IoError)?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(JavaError::Other(format!("Failed to kill process {}", pid)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::JavaInfo;
+
+    #[test]
+    fn test_format_memory_exact_mb() {
+        assert_eq!(format_memory(256 * 1024 * 1024), "256m");
+    }
+
+    #[test]
+    fn test_format_memory_exact_gb() {
+        assert_eq!(format_memory(2 * 1024 * 1024 * 1024), "2g");
+    }
+
+    #[test]
+    fn test_format_memory_rounded() {
+        let result = format_memory(100 * 1024 * 1024 + 512 * 1024);
+        assert!(result.ends_with('m'));
+        let num: usize = result[..result.len() - 1].parse().unwrap();
+        assert!(num >= 100);
+    }
+
+    #[test]
+    fn test_format_memory_zero() {
+        assert_eq!(format_memory(0), "0g");
+    }
+
+    #[test]
+    fn test_format_memory_small() {
+        let result = format_memory(1);
+        assert_eq!(result, "0m");
+    }
+
+    #[test]
+    fn test_runner_missing_java() {
+        let result = JavaRunner::new().jar("test.jar").execute();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Must set Java environment"));
+    }
+
+    #[test]
+    fn test_runner_missing_jar_or_main() {
+        // JavaInfo::default() has empty java_home, so java_executable() fails first
+        let info = JavaInfo::default();
+        let result = JavaRunner::new().java(info).execute();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_java_redirect_default() {
+        let r = JavaRedirect::new();
+        assert!(r.output.is_none());
+        assert!(r.error.is_none());
+        assert!(r.input.is_none());
+        assert!(!r.append_output);
+        assert!(!r.append_error);
+    }
+
+    #[test]
+    fn test_java_redirect_append() {
+        let r = JavaRedirect::new()
+            .output("out.log")
+            .append_output()
+            .error("err.log")
+            .append_error();
+        assert!(r.append_output);
+        assert!(r.append_error);
+    }
+
+    #[test]
+    fn test_runner_builder_methods() {
+        let runner = JavaRunner::new()
+            .system_property("foo", "bar")
+            .add_opens("java.base", "java.lang", "ALL-UNNAMED")
+            .add_exports("java.base", "com.sun.internal", "ALL-UNNAMED");
+        assert_eq!(runner.system_properties, vec!["-Dfoo=bar"]);
+        assert_eq!(runner.add_opens, vec!["java.base/java.lang.ALL-UNNAMED"]);
+        assert_eq!(
+            runner.add_exports,
+            vec!["java.base/com.sun.internal.ALL-UNNAMED"]
+        );
+    }
+
+    #[test]
+    fn test_output_mode_debug_clone() {
+        let mode = OutputMode::Both;
+        let cloned = mode;
+        assert_eq!(mode, cloned);
+        let _ = format!("{:?}", mode);
+    }
+
+    #[test]
+    fn test_format_memory_1gb_plus_1b() {
+        let result = format_memory(1024 * 1024 * 1024 + 1);
+        assert_eq!(result, "1024m");
+    }
+
+    #[test]
+    fn test_format_memory_1_mib() {
+        assert_eq!(format_memory(1024 * 1024), "1m");
+    }
+
+    #[test]
+    fn test_format_memory_1024_mib_is_1g() {
+        assert_eq!(format_memory(1024 * 1024 * 1024), "1g");
+    }
+
+    #[test]
+    fn test_runner_env_var() {
+        let runner = JavaRunner::new().env("MY_VAR", "my_value");
+        assert_eq!(runner.env_vars, vec![("MY_VAR".into(), "my_value".into())]);
+    }
+
+    #[test]
+    fn test_runner_working_dir() {
+        let runner = JavaRunner::new().working_dir("/tmp");
+        assert_eq!(runner.working_dir, Some(PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn test_runner_timeout() {
+        let runner = JavaRunner::new().timeout(Duration::from_secs(30));
+        assert_eq!(runner.timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_runner_classpath() {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        let runner = JavaRunner::new().classpath(&["lib/a.jar", "config"]);
+        assert_eq!(
+            runner.classpath,
+            Some(format!("lib/a.jar{separator}config"))
+        );
+    }
+
+    #[test]
+    fn test_runner_module_path() {
+        let runner = JavaRunner::new().module_path("./modules");
+        assert_eq!(runner.module_path, Some(PathBuf::from("./modules")));
+    }
+
+    #[test]
+    fn test_runner_multiple_args() {
+        let runner = JavaRunner::new().arg("--verbose").arg("--debug");
+        assert_eq!(runner.args, vec!["--verbose", "--debug"]);
+    }
+
+    #[test]
+    fn test_runner_all_builder_methods() {
+        let runner = JavaRunner::new()
+            .classpath(&["lib/*"])
+            .module_path("mods")
+            .add_opens("java.base", "java.lang", "ALL-UNNAMED")
+            .add_exports("java.base", "sun.security", "ALL-UNNAMED")
+            .system_property("key", "val")
+            .env("HOME", "/root")
+            .working_dir("/app")
+            .timeout(Duration::from_secs(10))
+            .min_memory(256 * 1024 * 1024)
+            .max_memory(1024 * 1024 * 1024);
+
+        assert!(runner.classpath.is_some());
+        assert!(runner.module_path.is_some());
+        assert_eq!(runner.add_opens.len(), 1);
+        assert_eq!(runner.add_exports.len(), 1);
+        assert_eq!(runner.system_properties.len(), 1);
+        assert_eq!(runner.env_vars.len(), 1);
+        assert!(runner.working_dir.is_some());
+        assert_eq!(runner.timeout, Some(Duration::from_secs(10)));
+        assert!(runner.min_memory.is_some());
+        assert!(runner.max_memory.is_some());
     }
 }

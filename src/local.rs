@@ -27,3 +27,43 @@ pub fn java_home() -> Option<JavaInfo> {
         .ok()
         .and_then(|path| JavaInfo::new(path).ok())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_java_home_not_set() {
+        let previous = std::env::var_os("JAVA_HOME");
+        // SAFETY: single-threaded test, no other code depends on JAVA_HOME
+        unsafe {
+            std::env::remove_var("JAVA_HOME");
+        }
+        let result = super::java_home();
+        assert!(result.is_none());
+        if let Some(val) = previous {
+            // SAFETY: restoring original value
+            unsafe {
+                std::env::set_var("JAVA_HOME", &val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_java_home_invalid_path() {
+        let previous = std::env::var_os("JAVA_HOME");
+        // SAFETY: single-threaded test
+        unsafe {
+            std::env::set_var("JAVA_HOME", "/nonexistent/java/home");
+        }
+        let result = super::java_home();
+        assert!(result.is_none());
+        if let Some(val) = previous {
+            unsafe {
+                std::env::set_var("JAVA_HOME", &val);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("JAVA_HOME");
+            }
+        }
+    }
+}

@@ -1,3 +1,22 @@
+# === Rust ===
 /target
+Cargo.lock
 
+# === Editors / IDEs ===
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# === macOS junk ===
+.DS_Store
+
+# === Project-local config ===
 user.mk
+.env
+.envrc
+learn/
+runtimes/
+AGENTS.md

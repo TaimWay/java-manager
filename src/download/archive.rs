@@ -1,8 +1,13 @@
+//! Archive extraction for downloaded JDK distributions.
+//!
+//! Supports ZIP archives on Windows and tar.gz archives on Linux/macOS.
+//! Magic-byte detection selects the correct extractor automatically.
+
 use std::fs;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(target_os = "windows"))]
 use {flate2::read::GzDecoder, tar::Archive};
@@ -10,6 +15,16 @@ use {flate2::read::GzDecoder, tar::Archive};
 #[cfg(target_os = "windows")]
 use zip::ZipArchive;
 
+/// Extracts a downloaded archive into `temp_dir`.
+///
+/// The archive format is detected from the first two magic bytes:
+/// - `PK` → ZIP (Windows only)
+/// - `0x1f 0x8b` → gzip-compressed tar (Linux / macOS only)
+///
+/// # Errors
+///
+/// Returns `Err(String)` if the archive cannot be opened, parsed, or
+/// extracted, or if extraction is cancelled via `cancel_flag`.
 pub(super) fn extract_downloaded_archive(
     temp_file_path: &Path,
     temp_dir: &Path,
@@ -59,16 +74,13 @@ fn extract_zip(
 
         if file.name().ends_with('/') {
             fs::create_dir_all(&outpath).map_err(|e| format!("create dir: {e}"))?;
-        } else {
-            if let Some(p) = outpath.parent() {
-                if !p.exists() {
-                    fs::create_dir_all(p).map_err(|e| format!("create parent dir: {e}"))?;
-                }
+        } else if let Some(p) = outpath.parent() {
+            if !p.exists() {
+                fs::create_dir_all(p).map_err(|e| format!("create parent dir: {e}"))?;
             }
             let mut outfile =
                 fs::File::create(&outpath).map_err(|e| format!("create file: {e}"))?;
-            std::io::copy(&mut file, &mut outfile)
-                .map_err(|e| format!("write file: {e}"))?;
+            std::io::copy(&mut file, &mut outfile).map_err(|e| format!("write file: {e}"))?;
         }
 
         on_progress(i as u64 + 1, total);
@@ -82,8 +94,7 @@ fn extract_tar_gz(
     target_dir: &Path,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let file =
-        fs::File::open(archive_path).map_err(|e| format!("open archive: {e}"))?;
+    let file = fs::File::open(archive_path).map_err(|e| format!("open archive: {e}"))?;
     let buf_reader = BufReader::new(file);
     let tar = GzDecoder::new(buf_reader);
     let mut archive = Archive::new(tar);

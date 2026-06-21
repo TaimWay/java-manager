@@ -1,10 +1,10 @@
-use java_manager::download::download_java;
 use java_manager::download::DownloadEvent;
+use java_manager::download::download_java;
+use std::error::Error;
 use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::error::Error;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 #[tokio::main]
@@ -13,7 +13,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .nth(1)
         .unwrap_or_else(|| "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jdk_x64_windows_hotspot_21.0.2_13.zip".to_string());
 
-    let version = std::env::args().nth(2).unwrap_or_else(|| "java-21".to_string());
+    let version = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "java-21".to_string());
 
     let runtimes_dir = Path::new("./runtimes");
     let cancel = Arc::new(AtomicBool::new(false));
@@ -59,7 +61,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             DownloadEvent::DownloadFinished { total } => {
                 println!();
-                println!("▸ Download complete – {} total in {:.1}s", format_bytes(total), start.elapsed().as_secs_f64());
+                println!(
+                    "▸ Download complete – {} total in {:.1}s",
+                    format_bytes(total),
+                    start.elapsed().as_secs_f64()
+                );
             }
             DownloadEvent::Extracting => {
                 println!("▸ Extracting archive...");

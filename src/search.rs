@@ -1,3 +1,16 @@
+//! System-level discovery of Java installations.
+//!
+//! Provides three tiers of search:
+//!
+//! | Function | Scope |
+//! |---|---|
+//! | [`quick_search`] | Walks every directory in `$PATH` looking for `java` (fastest) |
+//! | [`deep_search`] | Windows: Everything SDK (falls back to [`full_search`]).<br>Linux/macOS: delegates to [`full_search`] |
+//! | [`full_search`] | Registry, keyword BFS, Microsoft Store, `where` command,<br>package managers (Chocolatey, Scoop, SDKMAN, Homebrew,<br>JBang, asdf-vm), JetBrains IDE-bundled JDKs,<br>JVM directories, Minecraft runtime |
+//!
+//! Search results are automatically deduplicated: when both a JDK and its
+//! bundled JRE are found, only the JDK-level entry is returned.
+
 use crate::{JavaError, JavaInfo};
 use log::debug;
 use std::collections::VecDeque;
@@ -21,6 +34,33 @@ const EXCLUDE_FOLDERS: &[&str] = &[
     "log",
 ];
 
+/// Searches for Java installations by scanning every directory in `$PATH`.
+///
+/// This is the fastest search method — it only checks what is immediately
+/// available on the system `PATH`. On Windows it looks for `java.exe`;
+/// on Linux and macOS it looks for `java`.
+///
+/// # Returns
+///
+/// A `Vec<JavaInfo>` for every valid `java` executable found in `PATH`.
+///
+/// # Errors
+///
+/// Returns [`JavaError::IoError`] if a file-system operation fails when
+/// inspecting a candidate path. Individual invalid or unreadable paths are
+/// skipped silently.
+///
+/// # Example
+///
+/// ```no_run
+/// use java_manager::quick_search;
+///
+/// let javas = quick_search()?;
+/// for java in javas {
+///     println!("{} at {}", java.version, java.path.display());
+/// }
+/// # Ok::<_, java_manager::JavaError>(())
+/// ```
 pub fn quick_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut results: Vec<JavaInfo> = Vec::new();
 
@@ -69,10 +109,48 @@ fn dedup_nested(javas: Vec<JavaInfo>) -> Vec<JavaInfo> {
         .collect()
 }
 
+/// Performs a deep, platform-aware search for Java installations.
+///
+/// **Windows**: Uses the Everything SDK for near-instant results. If the
+/// Everything service is not running or the SDK is unavailable, automatically
+/// falls back to [`full_search`].
+///
+/// **Linux / macOS**: Delegates directly to [`full_search`], which walks
+/// standard JVM directories and checks SDKMAN, JBang, asdf-vm, Homebrew,
+/// JetBrains IDE-bundled JDKs, and Minecraft runtimes.
+///
+/// # Returns
+///
+/// A `Vec<JavaInfo>` for every valid Java installation found.
+///
+/// # Errors
+///
+/// Returns [`JavaError::IoError`] if file-system operations fail.
+/// On Windows, an Everything IPC error is silently caught and falls back
+/// to [`full_search`] — this never propagates to the caller.
+///
+/// # Example
+///
+/// ```no_run
+/// use java_manager::deep_search;
+///
+/// let javas = deep_search()?;
+/// println!("Found {} Java installation(s)", javas.len());
+/// # Ok::<_, java_manager::JavaError>(())
+/// ```
 pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
     #[cfg(target_os = "windows")]
     {
-        deep_search_everything()
+        match deep_search_everything() {
+            Ok(results) => return Ok(results),
+            Err(e) => {
+                debug!(
+                    "deep_search: Everything SDK unavailable ({}), falling back to full_search",
+                    e
+                );
+            }
+        }
+        full_search()
     }
 
     #[cfg(target_os = "linux")]
@@ -91,6 +169,45 @@ pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
     }
 }
 
+/// Performs a comprehensive, multi-strategy scan for Java installations.
+///
+/// This is the most thorough search method. It checks `$JAVA_HOME` first,
+/// then applies every available discovery strategy for the current platform:
+///
+/// **Windows**: Registry (HKLM + HKCU for JavaSoft, Azul, BellSoft, Temurin,
+/// Corretto, GraalVM) → Keyword BFS on all drives → Microsoft Store →
+/// `where java` → Chocolatey → Scoop → JetBrains IDE-bundled JDK.
+///
+/// **Linux**: `/usr/lib/jvm` → `/usr/java` → `/opt` → `/usr/local` →
+/// SDKMAN → JBang → asdf-vm → JetBrains IDE-bundled JDK → Minecraft runtime.
+///
+/// **macOS**: `/Library/Java/JavaVirtualMachines` →
+/// `/usr/libexec/java_home` → SDKMAN → JBang → asdf-vm → Homebrew →
+/// JetBrains IDE-bundled JDK → Minecraft runtime.
+///
+/// Results are automatically deduplicated — when both a JDK and its bundled
+/// JRE are discovered, only the JDK-level entry is kept.
+///
+/// # Returns
+///
+/// A `Vec<JavaInfo>` for every valid Java installation found.
+///
+/// # Errors
+///
+/// Returns [`JavaError::IoError`] if file-system operations fail.
+/// Individual unreadable paths are skipped silently.
+///
+/// # Example
+///
+/// ```no_run
+/// use java_manager::full_search;
+///
+/// let javas = full_search()?;
+/// for java in &javas {
+///     println!("{:25} {}", java.name, java.version);
+/// }
+/// # Ok::<_, java_manager::JavaError>(())
+/// ```
 pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
     let mut paths = Vec::new();
 
@@ -111,6 +228,9 @@ pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
     {
         paths.extend(scan_registry());
         paths.extend(scan_default_paths());
+        paths.extend(scan_chocolatey());
+        paths.extend(scan_scoop());
+        paths.extend(scan_jetbrains_windows());
         paths.extend(scan_microsoft_store());
         paths.extend(scan_where_command());
     }
@@ -118,11 +238,20 @@ pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
     #[cfg(target_os = "linux")]
     {
         paths.extend(scan_linux());
+        paths.extend(scan_sdkman_linux());
+        paths.extend(scan_jbang_linux());
+        paths.extend(scan_asdf_linux());
+        paths.extend(scan_jetbrains_linux());
     }
 
     #[cfg(target_os = "macos")]
     {
         paths.extend(scan_macos());
+        paths.extend(scan_sdkman_macos());
+        paths.extend(scan_jbang_macos());
+        paths.extend(scan_asdf_macos());
+        paths.extend(scan_homebrew_macos());
+        paths.extend(scan_jetbrains_macos());
     }
 
     paths.sort();
@@ -155,7 +284,33 @@ pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
 
 /// Same as [`full_search`] but parallelises `JavaInfo` resolution with rayon.
 ///
+/// The search strategy is identical to [`full_search`]. The difference is that
+/// `JavaInfo::new()` calls (which spawn a `java -version` process for each
+/// candidate) run concurrently via rayon, significantly speeding up scans
+/// when many candidates are discovered.
+///
 /// Only available with the `parallel` feature enabled.
+///
+/// # Returns
+///
+/// A `Vec<JavaInfo>` for every valid Java installation found.
+///
+/// # Errors
+///
+/// Returns [`JavaError::IoError`] if file-system operations fail.
+///
+/// # Example
+///
+/// ```no_run
+/// # #[cfg(feature = "parallel")]
+/// # {
+/// use java_manager::parallel_full_search;
+///
+/// let javas = parallel_full_search()?;
+/// println!("Found {} Java installation(s)", javas.len());
+/// # }
+/// # Ok::<_, java_manager::JavaError>(())
+/// ```
 #[cfg(feature = "parallel")]
 pub fn parallel_full_search() -> Result<Vec<JavaInfo>, JavaError> {
     use rayon::prelude::*;
@@ -179,6 +334,9 @@ pub fn parallel_full_search() -> Result<Vec<JavaInfo>, JavaError> {
     {
         paths.par_extend(scan_registry());
         paths.par_extend(scan_default_paths());
+        paths.par_extend(scan_chocolatey());
+        paths.par_extend(scan_scoop());
+        paths.par_extend(scan_jetbrains_windows());
         paths.par_extend(scan_microsoft_store());
         paths.par_extend(scan_where_command());
     }
@@ -186,11 +344,20 @@ pub fn parallel_full_search() -> Result<Vec<JavaInfo>, JavaError> {
     #[cfg(target_os = "linux")]
     {
         paths.par_extend(scan_linux());
+        paths.par_extend(scan_sdkman_linux());
+        paths.par_extend(scan_jbang_linux());
+        paths.par_extend(scan_asdf_linux());
+        paths.par_extend(scan_jetbrains_linux());
     }
 
     #[cfg(target_os = "macos")]
     {
         paths.par_extend(scan_macos());
+        paths.par_extend(scan_sdkman_macos());
+        paths.par_extend(scan_jbang_macos());
+        paths.par_extend(scan_asdf_macos());
+        paths.par_extend(scan_homebrew_macos());
+        paths.par_extend(scan_jetbrains_macos());
     }
 
     paths.par_sort_unstable();
@@ -398,6 +565,737 @@ fn scan_registry() -> Vec<PathBuf> {
     results
 }
 
+// -----------------------------------------------------------------------------
+// Chocolatey (Windows)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "windows")]
+fn scan_chocolatey() -> Vec<PathBuf> {
+    let prog_data = match env::var_os("ProgramData") {
+        Some(v) => Path::new(&v).join("chocolatey").join("lib"),
+        None => return Vec::new(),
+    };
+
+    debug!("scan_chocolatey: checking {}", prog_data.display());
+    if !prog_data.exists() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    if let Ok(entries) = fs::read_dir(&prog_data) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let java_exe = dir.join("bin").join("java.exe");
+            if java_exe.exists() {
+                debug!("scan_chocolatey: found Java at {}", java_exe.display());
+                results.push(java_exe);
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// Scoop (Windows)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "windows")]
+fn scan_scoop() -> Vec<PathBuf> {
+    let scoop_home = if let Some(v) = env::var_os("SCOOP") {
+        Path::new(&v).to_path_buf()
+    } else if let Some(v) = env::var_os("USERPROFILE") {
+        Path::new(&v).join("scoop").join("apps")
+    } else {
+        return Vec::new();
+    };
+
+    debug!("scan_scoop: checking {}", scoop_home.display());
+    if !scoop_home.exists() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    if let Ok(entries) = fs::read_dir(&scoop_home) {
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name().to_string_lossy().to_lowercase();
+            if !JAVA_KEYWORDS.iter().any(|kw| dir_name.contains(kw)) {
+                continue;
+            }
+            let current_java = entry.path().join("current").join("bin").join("java.exe");
+            if current_java.exists() {
+                debug!("scan_scoop: found Java at {}", current_java.display());
+                results.push(current_java);
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// JetBrains IDE-bundled JDK (Windows)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "windows")]
+fn scan_jetbrains_windows() -> Vec<PathBuf> {
+    let mut results = Vec::new();
+
+    let search_roots: Vec<PathBuf> = {
+        let mut roots = Vec::new();
+        if let Some(localappdata) = env::var_os("LOCALAPPDATA") {
+            roots.push(Path::new(&localappdata).join("JetBrains"));
+        }
+        if let Some(prog_files) = env::var_os("ProgramFiles") {
+            roots.push(Path::new(&prog_files).join("JetBrains"));
+        }
+        if let Some(prog_files_x86) = env::var_os("ProgramFiles(x86)") {
+            roots.push(Path::new(&prog_files_x86).join("JetBrains"));
+        }
+        roots
+    };
+
+    for root in search_roots {
+        if !root.exists() {
+            continue;
+        }
+        debug!("scan_jetbrains_windows: checking {}", root.display());
+        if let Ok(entries) = fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let jbr = entry.path().join("jbr").join("bin").join("java.exe");
+                if jbr.exists() {
+                    debug!("scan_jetbrains_windows: found Java at {}", jbr.display());
+                    results.push(jbr);
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// SDKMAN (Linux)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+fn scan_sdkman_linux() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let sdkman_candidates = Path::new(&home)
+        .join(".sdkman")
+        .join("candidates")
+        .join("java");
+    if !sdkman_candidates.exists() {
+        return Vec::new();
+    }
+
+    debug!(
+        "scan_sdkman_linux: checking {}",
+        sdkman_candidates.display()
+    );
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&sdkman_candidates) {
+        for entry in entries.flatten() {
+            let java_exe = entry.path().join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_sdkman_linux: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// JetBrains IDE-bundled JDK (Linux)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+fn scan_jetbrains_linux() -> Vec<PathBuf> {
+    let mut results = Vec::new();
+
+    let search_roots: Vec<PathBuf> = {
+        let mut roots: Vec<PathBuf> = vec![Path::new("/opt").join("JetBrains")];
+        if let Ok(home) = env::var("HOME") {
+            roots.push(
+                Path::new(&home)
+                    .join(".local")
+                    .join("share")
+                    .join("JetBrains"),
+            );
+        }
+        roots
+    };
+
+    for root in &search_roots {
+        if !root.exists() {
+            continue;
+        }
+        debug!("scan_jetbrains_linux: checking {}", root.display());
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let jbr = entry.path().join("jbr").join("bin").join("java");
+                if jbr.exists() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = jbr.metadata() {
+                            if metadata.permissions().mode() & 0o111 != 0 {
+                                debug!("scan_jetbrains_linux: found Java at {}", jbr.display());
+                                results.push(jbr);
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        results.push(jbr);
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// -----------------------------------------------------------------------------
+// SDKMAN (macOS)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+fn scan_sdkman_macos() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let sdkman_candidates = Path::new(&home)
+        .join(".sdkman")
+        .join("candidates")
+        .join("java");
+    if !sdkman_candidates.exists() {
+        return Vec::new();
+    }
+
+    debug!(
+        "scan_sdkman_macos: checking {}",
+        sdkman_candidates.display()
+    );
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&sdkman_candidates) {
+        for entry in entries.flatten() {
+            let java_exe = entry.path().join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_sdkman_macos: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// Homebrew (macOS)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+fn scan_homebrew_macos() -> Vec<PathBuf> {
+    let mut results = Vec::new();
+
+    let brew_roots: &[&str] = &["/opt/homebrew/opt", "/usr/local/opt"];
+
+    for root in brew_roots {
+        let root_path = Path::new(root);
+        if !root_path.exists() {
+            continue;
+        }
+        debug!("scan_homebrew_macos: checking {}", root);
+        if let Ok(entries) = fs::read_dir(root_path) {
+            for entry in entries.flatten() {
+                let dir_name = entry.file_name().to_string_lossy().to_lowercase();
+                if dir_name.starts_with("openjdk") || dir_name.starts_with("java") {
+                    let java_exe = entry.path().join("bin").join("java");
+                    if java_exe.exists() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = java_exe.metadata() {
+                                if metadata.permissions().mode() & 0o111 != 0 {
+                                    debug!(
+                                        "scan_homebrew_macos: found Java at {}",
+                                        java_exe.display()
+                                    );
+                                    results.push(java_exe);
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            results.push(java_exe);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// JetBrains IDE-bundled JDK (macOS)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+fn scan_jetbrains_macos() -> Vec<PathBuf> {
+    let mut results = Vec::new();
+
+    // /Applications/*.app/Contents/jbr/Contents/Home/bin/java
+    debug!("scan_jetbrains_macos: checking /Applications");
+    if let Ok(entries) = fs::read_dir("/Applications") {
+        for entry in entries.flatten() {
+            let app_name = entry.file_name().to_string_lossy().to_lowercase();
+            if !app_name.contains("jetbrains")
+                && !app_name.contains("intellij")
+                && !app_name.contains("android studio")
+            {
+                continue;
+            }
+            let jbr_home = entry
+                .path()
+                .join("Contents")
+                .join("jbr")
+                .join("Contents")
+                .join("Home");
+            let java_exe = jbr_home.join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_jetbrains_macos: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+
+    // ~/Library/Application Support/JetBrains/*/jbr/Contents/Home/bin/java
+    if let Ok(home) = env::var("HOME") {
+        let jetbrains_support = Path::new(&home)
+            .join("Library")
+            .join("Application Support")
+            .join("JetBrains");
+        if jetbrains_support.exists() {
+            debug!(
+                "scan_jetbrains_macos: checking {}",
+                jetbrains_support.display()
+            );
+            if let Ok(entries) = fs::read_dir(&jetbrains_support) {
+                for entry in entries.flatten() {
+                    let jbr_home = entry.path().join("jbr").join("Contents").join("Home");
+                    let java_exe = jbr_home.join("bin").join("java");
+                    if java_exe.exists() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = java_exe.metadata() {
+                                if metadata.permissions().mode() & 0o111 != 0 {
+                                    debug!(
+                                        "scan_jetbrains_macos: found Java at {}",
+                                        java_exe.display()
+                                    );
+                                    results.push(java_exe);
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            results.push(java_exe);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+// -----------------------------------------------------------------------------
+// JBang (Linux)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+fn scan_jbang_linux() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let jbang_jdks = Path::new(&home).join(".jbang").join("cache").join("jdks");
+    if !jbang_jdks.exists() {
+        return Vec::new();
+    }
+
+    debug!("scan_jbang_linux: checking {}", jbang_jdks.display());
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&jbang_jdks) {
+        for entry in entries.flatten() {
+            let java_exe = entry.path().join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_jbang_linux: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// asdf-vm (Linux)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+fn scan_asdf_linux() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let asdf_java = Path::new(&home).join(".asdf").join("installs").join("java");
+    if !asdf_java.exists() {
+        return Vec::new();
+    }
+
+    debug!("scan_asdf_linux: checking {}", asdf_java.display());
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&asdf_java) {
+        for entry in entries.flatten() {
+            let java_exe = entry.path().join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_asdf_linux: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// JBang (macOS)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+fn scan_jbang_macos() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let jbang_jdks = Path::new(&home).join(".jbang").join("cache").join("jdks");
+    if !jbang_jdks.exists() {
+        return Vec::new();
+    }
+
+    debug!("scan_jbang_macos: checking {}", jbang_jdks.display());
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&jbang_jdks) {
+        for entry in entries.flatten() {
+            let java_exe = entry.path().join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_jbang_macos: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+    results
+}
+
+// -----------------------------------------------------------------------------
+// asdf-vm (macOS)
+// -----------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+fn scan_asdf_macos() -> Vec<PathBuf> {
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    let asdf_java = Path::new(&home).join(".asdf").join("installs").join("java");
+    if !asdf_java.exists() {
+        return Vec::new();
+    }
+
+    debug!("scan_asdf_macos: checking {}", asdf_java.display());
+    let mut results = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&asdf_java) {
+        for entry in entries.flatten() {
+            let java_exe = entry.path().join("bin").join("java");
+            if java_exe.exists() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = java_exe.metadata() {
+                        if metadata.permissions().mode() & 0o111 != 0 {
+                            debug!("scan_asdf_macos: found Java at {}", java_exe.display());
+                            results.push(java_exe);
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    results.push(java_exe);
+                }
+            }
+        }
+    }
+    results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dedup_nested_no_duplicates() {
+        let javas = vec![
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11"),
+                ..Default::default()
+            },
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-17"),
+                ..Default::default()
+            },
+        ];
+        let result = dedup_nested(javas);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_nested_removes_jre() {
+        let javas = vec![
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11"),
+                ..Default::default()
+            },
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11/jre"),
+                ..Default::default()
+            },
+        ];
+        let result = dedup_nested(javas);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].java_home, PathBuf::from("/usr/lib/jvm/java-11"));
+    }
+
+    #[test]
+    fn test_dedup_nested_same_path() {
+        let javas = vec![
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11"),
+                ..Default::default()
+            },
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11"),
+                ..Default::default()
+            },
+        ];
+        let result = dedup_nested(javas);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_dedup_nested_standalone_jre() {
+        let javas = vec![
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11"),
+                ..Default::default()
+            },
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/jre-8"),
+                ..Default::default()
+            },
+        ];
+        let result = dedup_nested(javas);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_is_version_like_valid() {
+        assert!(is_version_like("11.0.2"));
+        assert!(is_version_like("1.8.0_202"));
+        assert!(is_version_like("17_3"));
+    }
+
+    #[test]
+    fn test_is_version_like_invalid() {
+        assert!(!is_version_like(""));
+        assert!(!is_version_like(&"a".repeat(21)));
+        assert!(!is_version_like("no_digits"));
+    }
+
+    #[test]
+    fn test_is_version_like_more() {
+        assert!(is_version_like("8"));
+        assert!(is_version_like("11.0"));
+        assert!(is_version_like("1.8"));
+        assert!(is_version_like("20.0.0.0"));
+        assert!(is_version_like(".1"));
+        assert!(!is_version_like(".."));
+        assert!(!is_version_like("a-b-c"));
+    }
+
+    #[test]
+    fn test_dedup_nested_deeply_nested() {
+        let javas = vec![
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11"),
+                ..Default::default()
+            },
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11/jre"),
+                ..Default::default()
+            },
+            JavaInfo {
+                java_home: PathBuf::from("/usr/lib/jvm/java-11/jre/lib"),
+                ..Default::default()
+            },
+        ];
+        let result = dedup_nested(javas);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].java_home, PathBuf::from("/usr/lib/jvm/java-11"));
+    }
+
+    #[test]
+    fn test_filter_by_version() {
+        let javas = vec![
+            JavaInfo {
+                version: "11.0.2".into(),
+                parsed_version: crate::JavaVersion::parse("11.0.2"),
+                ..Default::default()
+            },
+            JavaInfo {
+                version: "17.0.1".into(),
+                parsed_version: crate::JavaVersion::parse("17.0.1"),
+                ..Default::default()
+            },
+        ];
+        let filtered = crate::filter_by_version(javas, "17");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].version, "17.0.1");
+    }
+
+    #[test]
+    fn test_best_match() {
+        let javas = vec![
+            JavaInfo {
+                version: "11.0.2".into(),
+                parsed_version: crate::JavaVersion::parse("11.0.2"),
+                ..Default::default()
+            },
+            JavaInfo {
+                version: "17.0.1".into(),
+                parsed_version: crate::JavaVersion::parse("17.0.1"),
+                ..Default::default()
+            },
+            JavaInfo {
+                version: "8.0_202".into(),
+                parsed_version: crate::JavaVersion::parse("1.8.0_202"),
+                ..Default::default()
+            },
+        ];
+        let best = crate::best_match(javas, "8");
+        assert!(best.is_some());
+        assert_eq!(best.unwrap().version, "8.0_202");
+    }
+
+    #[test]
+    fn test_filter_by_version_no_match() {
+        let javas = vec![JavaInfo {
+            version: "11.0.2".into(),
+            parsed_version: crate::JavaVersion::parse("11.0.2"),
+            ..Default::default()
+        }];
+        let filtered = crate::filter_by_version(javas, "17");
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_best_match_no_match() {
+        let javas = vec![JavaInfo {
+            version: "11.0.2".into(),
+            parsed_version: crate::JavaVersion::parse("11.0.2"),
+            ..Default::default()
+        }];
+        let best = crate::best_match(javas, "17");
+        assert!(best.is_none());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// BFS scan of default paths (Windows)
+// -----------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 fn scan_default_paths() -> Vec<PathBuf> {
     let mut results = Vec::new();

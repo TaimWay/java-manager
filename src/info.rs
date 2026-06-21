@@ -18,11 +18,31 @@ const UNKNOWN: &str = "UNKNOWN";
 ///
 /// Handles formats like `11.0.2`, `1.8.0_202-ea`, `17.0.2+13-LTS`,
 /// `11-ea`, and `17.0.8.1` (extra segments are ignored).
+///
+/// The [`Display`](std::fmt::Display) implementation renders as `{major}.{minor}.{patch}`,
+/// except when all three are zero — in that case the [`raw`](JavaVersion::raw) string
+/// is shown as a fallback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JavaVersion {
+    /// Major version number (e.g. `11` in `11.0.2`).
+    ///
+    /// For legacy Java 8 this is the second component — `1.8.0_202` becomes
+    /// `major = 8`.
     pub major: u64,
+
+    /// Minor version number (e.g. `0` in `11.0.2`).
+    ///
+    /// Defaults to `0` when only the major component is specified.
     pub minor: u64,
+
+    /// Patch / security-update version number (e.g. `2` in `11.0.2`).
+    ///
+    /// Defaults to `0` when only major and minor are specified.
     pub patch: u64,
+
+    /// The raw version string as produced by `java -version`.
+    ///
+    /// Preserved for display when automatic parsing falls back to `0.0.0`.
     pub raw: String,
 }
 
@@ -62,6 +82,9 @@ impl JavaVersion {
 
 impl fmt::Display for JavaVersion {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.major == 0 && self.minor == 0 && self.patch == 0 && !self.raw.is_empty() {
+            return write!(f, "{}", self.raw);
+        }
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
@@ -254,6 +277,22 @@ impl JavaInfo {
     /// - `"17.0.2"` — exact major.minor.patch match
     ///
     /// Returns `false` if the version could not be parsed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use java_manager::JavaInfo;
+    /// let info = JavaInfo {
+    ///     version: "11.0.2".into(),
+    ///     parsed_version: java_manager::JavaVersion::parse("11.0.2"),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// assert!( info.matches_version("11"));
+    /// assert!( info.matches_version("11.0"));
+    /// assert!( info.matches_version("11.0.2"));
+    /// assert!(!info.matches_version("17"));
+    /// ```
     pub fn matches_version(&self, req: &str) -> bool {
         let parsed = match &self.parsed_version {
             Some(v) => v,
@@ -298,6 +337,96 @@ impl JavaInfo {
             && self.version != UNKNOWN
             && self.vendor != UNKNOWN
             && self.architecture != UNKNOWN
+    }
+
+    /// Returns `true` if this installation is a full JDK (has `javac`).
+    ///
+    /// Checks for the presence of `javac` (or `javac.exe` on Windows) in the
+    /// `JAVA_HOME/bin` directory. A `false` return typically means a JRE.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use java_manager::java_home;
+    ///
+    /// if let Some(java) = java_home() {
+    ///     if java.is_jdk() {
+    ///         println!("Full JDK detected");
+    ///     } else {
+    ///         println!("JRE only");
+    ///     }
+    /// }
+    /// ```
+    pub fn is_jdk(&self) -> bool {
+        let javac =
+            self.java_home
+                .join("bin")
+                .join(if cfg!(windows) { "javac.exe" } else { "javac" });
+        javac.exists()
+    }
+
+    /// Returns a list of JDK tools available in this installation.
+    ///
+    /// Checks for common tools in `JAVA_HOME/bin`: `javac`, `javadoc`,
+    /// `javap`, `jar`, `jlink`, `jmod`, `jpackage`, `jshell`, `jconsole`,
+    /// `jcmd`, `jmap`, `jstack`, `jstat`, `jhsdb`, `jfr`, `jwebserver`.
+    ///
+    /// Returns an empty `Vec` if the directory cannot be read.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use java_manager::java_home;
+    ///
+    /// if let Some(java) = java_home() {
+    ///     let tools = java.capabilities();
+    ///     println!("Available tools: {:?}", tools);
+    /// }
+    /// ```
+    pub fn capabilities(&self) -> Vec<String> {
+        let bin_dir = self.java_home.join("bin");
+        let tools = [
+            "javac",
+            "javadoc",
+            "javap",
+            "jar",
+            "jlink",
+            "jmod",
+            "jpackage",
+            "jshell",
+            "jconsole",
+            "jcmd",
+            "jmap",
+            "jstack",
+            "jstat",
+            "jhsdb",
+            "jfr",
+            "jwebserver",
+        ];
+
+        let mut available = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+            let names: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if cfg!(windows) {
+                        // On Windows, strip .exe extension
+                        name.strip_suffix(".exe").map(|s| s.to_string())
+                    } else {
+                        Some(name)
+                    }
+                })
+                .collect();
+
+            for tool in tools {
+                let tool_name = tool.to_string();
+                if names.contains(&tool_name) || names.contains(&format!("{}.exe", tool_name)) {
+                    available.push(tool.to_string());
+                }
+            }
+        }
+        available
     }
 }
 
@@ -443,4 +572,244 @@ fn read_version(java_exe: &Path) -> Result<VersionInfo, JavaError> {
         vendor,
         arch,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_java_8() {
+        let v = JavaVersion::parse("1.8.0_202-ea").unwrap();
+        assert_eq!(v.major, 8);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 202);
+        assert_eq!(v.raw, "1.8.0_202-ea");
+    }
+
+    #[test]
+    fn test_parse_java_11() {
+        let v = JavaVersion::parse("11.0.2").unwrap();
+        assert_eq!(v.major, 11);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 2);
+    }
+
+    #[test]
+    fn test_parse_java_17() {
+        let v = JavaVersion::parse("17.0.2+13-LTS").unwrap();
+        assert_eq!(v.major, 17);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 2);
+    }
+
+    #[test]
+    fn test_parse_java_21() {
+        let v = JavaVersion::parse("21.0.1+12").unwrap();
+        assert_eq!(v.major, 21);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 1);
+    }
+
+    #[test]
+    fn test_parse_ea_no_patch() {
+        let v = JavaVersion::parse("11-ea").unwrap();
+        assert_eq!(v.major, 11);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 0);
+    }
+
+    #[test]
+    fn test_parse_extra_segments() {
+        let v = JavaVersion::parse("17.0.8.1").unwrap();
+        assert_eq!(v.major, 17);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 8);
+    }
+
+    #[test]
+    fn test_parse_no_input() {
+        assert!(JavaVersion::parse("").is_none());
+    }
+
+    #[test]
+    fn test_parse_garbage() {
+        assert!(JavaVersion::parse("not.a.version").is_none());
+    }
+
+    #[test]
+    fn test_parse_letters_only() {
+        assert!(JavaVersion::parse("abc.def").is_none());
+    }
+
+    #[test]
+    fn test_display_normal() {
+        let v = JavaVersion::parse("11.0.2").unwrap();
+        assert_eq!(v.to_string(), "11.0.2");
+    }
+
+    #[test]
+    fn test_display_fallback_raw() {
+        let v = JavaVersion {
+            major: 0,
+            minor: 0,
+            patch: 0,
+            raw: "1.8.0_202".into(),
+        };
+        assert_eq!(v.to_string(), "1.8.0_202");
+    }
+
+    #[test]
+    fn test_matches_version_exact() {
+        let mut info = JavaInfo::default();
+        info.version = "11.0.2".into();
+        info.parsed_version = JavaVersion::parse("11.0.2");
+        assert!(info.matches_version("11.0.2"));
+    }
+
+    #[test]
+    fn test_matches_version_major_only() {
+        let mut info = JavaInfo::default();
+        info.version = "11.0.2".into();
+        info.parsed_version = JavaVersion::parse("11.0.2");
+        assert!(info.matches_version("11"));
+    }
+
+    #[test]
+    fn test_matches_version_major_minor() {
+        let mut info = JavaInfo::default();
+        info.version = "11.0.2".into();
+        info.parsed_version = JavaVersion::parse("11.0.2");
+        assert!(info.matches_version("11.0"));
+    }
+
+    #[test]
+    fn test_matches_version_no_match() {
+        let mut info = JavaInfo::default();
+        info.version = "11.0.2".into();
+        info.parsed_version = JavaVersion::parse("11.0.2");
+        assert!(!info.matches_version("17"));
+    }
+
+    #[test]
+    fn test_matches_version_unparseable() {
+        let info = JavaInfo::default();
+        assert!(!info.matches_version("11"));
+    }
+
+    #[test]
+    fn test_matches_version_invalid_req() {
+        let mut info = JavaInfo::default();
+        info.version = "11.0.2".into();
+        info.parsed_version = JavaVersion::parse("11.0.2");
+        assert!(!info.matches_version("abc"));
+    }
+
+    #[test]
+    fn test_matches_version_too_many_parts() {
+        let mut info = JavaInfo::default();
+        info.version = "11.0.2".into();
+        info.parsed_version = JavaVersion::parse("11.0.2");
+        assert!(!info.matches_version("11.0.2.1"));
+    }
+
+    #[test]
+    fn test_java_version_ordering() {
+        let v8 = JavaVersion::parse("1.8.0_202").unwrap();
+        let v11 = JavaVersion::parse("11.0.2").unwrap();
+        let v17 = JavaVersion::parse("17.0.1").unwrap();
+        assert!(v8 < v11);
+        assert!(v11 < v17);
+        assert!(v17 > v11);
+    }
+
+    #[test]
+    fn test_java_version_eq() {
+        let a = JavaVersion::parse("11.0.2").unwrap();
+        let b = JavaVersion::parse("11.0.2").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_java_version_ordering_same_major() {
+        let a = JavaVersion::parse("11.0.2").unwrap();
+        let b = JavaVersion::parse("11.0.3").unwrap();
+        assert!(a < b);
+        assert!(b > a);
+    }
+
+    #[test]
+    fn test_java_info_default() {
+        let info = JavaInfo::default();
+        assert_eq!(info.name, "UNKNOWN");
+        assert_eq!(info.version, "UNKNOWN");
+        assert!(info.parsed_version.is_none());
+        assert!(info.path.to_string_lossy().is_empty());
+    }
+
+    #[test]
+    fn test_is_jdk_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let javac_path = bin.join(if cfg!(windows) { "javac.exe" } else { "javac" });
+        std::fs::write(&javac_path, "").unwrap();
+
+        let info = JavaInfo {
+            java_home: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert!(info.is_jdk());
+    }
+
+    #[test]
+    fn test_is_jdk_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = JavaInfo {
+            java_home: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert!(!info.is_jdk());
+    }
+
+    #[test]
+    fn test_capabilities_returns_matching_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+
+        let tool = if cfg!(windows) { "javac.exe" } else { "javac" };
+        std::fs::write(bin.join(tool), "").unwrap();
+
+        // Also create a tool that is NOT in the known list
+        let other = if cfg!(windows) { "other.exe" } else { "other" };
+        std::fs::write(bin.join(other), "").unwrap();
+
+        let info = JavaInfo {
+            java_home: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let caps = info.capabilities();
+        assert!(caps.contains(&"javac".to_string()));
+        assert!(!caps.contains(&"other".to_string()));
+    }
+
+    #[test]
+    fn test_capabilities_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = JavaInfo {
+            java_home: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert!(info.capabilities().is_empty());
+    }
+
+    #[test]
+    fn test_capabilities_nonexistent_dir() {
+        let info = JavaInfo {
+            java_home: PathBuf::from("/nonexistent/path"),
+            ..Default::default()
+        };
+        assert!(info.capabilities().is_empty());
+    }
 }

@@ -1,10 +1,20 @@
+//! Async JDK download with automatic extraction.
+//!
+//! Supports HTTP/HTTPS downloads with:
+//! - Resume of interrupted downloads
+//! - Parallel chunked downloading for large files
+//! - Automatic archive extraction (ZIP on Windows, tar.gz on Unix)
+//! - Progress and cancellation events via flume channels
+//!
+//! The entry point is [`download_java`].
+
 mod archive;
 mod shared;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use flume::Receiver;
@@ -96,7 +106,10 @@ pub fn download_java(
     version_name: &str,
     runtimes_dir: &Path,
     cancel_flag: Arc<AtomicBool>,
-) -> (Receiver<DownloadEvent>, tokio::task::JoinHandle<Result<PathBuf, JavaError>>) {
+) -> (
+    Receiver<DownloadEvent>,
+    tokio::task::JoinHandle<Result<PathBuf, JavaError>>,
+) {
     let (tx, rx) = flume::unbounded::<DownloadEvent>();
 
     let url = url.to_string();
@@ -104,8 +117,7 @@ pub fn download_java(
     let runtimes_dir = runtimes_dir.to_path_buf();
 
     let handle = tokio::spawn(async move {
-        let result =
-            download_inner(&url, &version_name, &runtimes_dir, &cancel_flag, &tx).await;
+        let result = download_inner(&url, &version_name, &runtimes_dir, &cancel_flag, &tx).await;
         if let Err(ref e) = result {
             let _ = tx.send(DownloadEvent::Failed {
                 message: e.to_string(),
@@ -175,12 +187,24 @@ async fn download_inner(
     let resume_offset = read_resume_offset(&temp_dir).unwrap_or(0);
     let downloaded = if resume_offset > 0 && accept_ranges && total_size > 0 {
         resume_download(
-            &client, url, resume_offset, total_size, &temp_file_path, cancel_flag, tx,
+            &client,
+            url,
+            resume_offset,
+            total_size,
+            &temp_file_path,
+            cancel_flag,
+            tx,
         )
         .await?
     } else if accept_ranges && total_size >= MIN_PARALLEL_SIZE {
         parallel_download(
-            &client, url, total_size, &temp_dir, &temp_file_path, cancel_flag, tx,
+            &client,
+            url,
+            total_size,
+            &temp_dir,
+            &temp_file_path,
+            cancel_flag,
+            tx,
         )
         .await?
     } else {
@@ -199,9 +223,8 @@ async fn download_inner(
     let _ = tx.send(DownloadEvent::Extracting);
 
     let mut magic = [0u8; 2];
-    let mut magic_file =
-        fs::File::open(&temp_file_path)
-            .map_err(|e| JavaError::DownloadError(format!("open temp file: {e}")))?;
+    let mut magic_file = fs::File::open(&temp_file_path)
+        .map_err(|e| JavaError::DownloadError(format!("open temp file: {e}")))?;
     let read_len = std::io::Read::read(&mut magic_file, &mut magic)
         .map_err(|e| JavaError::DownloadError(format!("read magic bytes: {e}")))?;
     drop(magic_file);
@@ -347,10 +370,10 @@ async fn stream_download(
         }
 
         // Persist resume offset every ~2 MB
-        if downloaded % (2 * 1024 * 1024) < chunk.len() as u64 {
-            if let Some(dir) = dest.parent() {
-                let _ = write_resume_offset(dir, downloaded);
-            }
+        if downloaded % (2 * 1024 * 1024) < chunk.len() as u64
+            && let Some(dir) = dest.parent()
+        {
+            let _ = write_resume_offset(dir, downloaded);
         }
     }
 
@@ -418,7 +441,7 @@ async fn parallel_download(
 
         handles.push(tokio::spawn(async move {
             download_chunk(&client, &url, start, end, &chunk_path, &cancel).await?;
-            progress.fetch_add((end - start + 1) as u64, Ordering::Relaxed);
+            progress.fetch_add(end - start + 1, Ordering::Relaxed);
             Ok::<_, JavaError>(())
         }));
     }
@@ -532,10 +555,10 @@ async fn resume_download(
             last_emit = Instant::now();
         }
 
-        if downloaded % (2 * 1024 * 1024) < chunk.len() as u64 {
-            if let Some(dir) = dest.parent() {
-                let _ = write_resume_offset(dir, downloaded);
-            }
+        if downloaded % (2 * 1024 * 1024) < chunk.len() as u64
+            && let Some(dir) = dest.parent()
+        {
+            let _ = write_resume_offset(dir, downloaded);
         }
     }
 
