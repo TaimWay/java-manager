@@ -57,7 +57,7 @@ pub fn deep_search() -> Result<Vec<JavaInfo>, JavaError> {
 }
 
 pub fn full_search() -> Result<Vec<JavaInfo>, JavaError> {
-    let mut paths = Vec::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
 
     #[cfg(target_os = "windows")]
     {
