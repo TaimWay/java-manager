@@ -436,8 +436,10 @@ fn scan_linux() -> Vec<PathBuf> {
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(metadata) = entry_path.metadata() {
                     let permissions = metadata.permissions();
-                    if permissions.mode() & 0o111 != 0 {
-                        results.push(entry_path.to_path_buf());
+                    if permissions.mode() & 0o111 != 0
+                        && let Ok(path) = entry_path.canonicalize()
+                    {
+                        results.push(path);
                     }
                 }
             }
@@ -453,12 +455,7 @@ fn scan_linux() -> Vec<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn should_explore_linux(path: &Path) -> bool {
-    let name = match path.file_name() {
-        Some(n) => n.to_string_lossy(),
-        None => return true,
-    };
-
-    let lower = name.to_lowercase();
+    let lower = path.to_string_lossy().to_lowercase();
 
     for ex in EXCLUDE_FOLDERS {
         if lower.contains(ex) {
@@ -472,5 +469,5 @@ fn should_explore_linux(path: &Path) -> bool {
         }
     }
 
-    is_version_like(&name)
+    false
 }
